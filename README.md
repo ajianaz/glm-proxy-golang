@@ -408,14 +408,55 @@ docker compose down
 
 ### Traefik Integration
 
-Uncomment the labels section in `docker-compose.yml`:
+Domain dan port dikonfigurasi via `.env`:
 
-```yaml
-labels:
-  - "traefik.enable=true"
-  - "traefik.http.routers.glm-proxy.rule=Host(`glm.example.com`)"
-  - "traefik.http.routers.glm-proxy.tls=true"
-  - "traefik.http.routers.glm-proxy.tls.certresolver=letsencrypt"
+```env
+DOMAIN=glm.ajianaz.dev
+PORT=3000
+```
+
+Traefik labels di `docker-compose.yml` sudah otomatis membaca `DOMAIN` dan `PORT` dari env.
+
+## CI/CD (GitHub Actions)
+
+Push ke `main` otomatis build dan push Docker image ke GitHub Container Registry.
+
+### Setup Secrets
+
+Di repo GitHub: **Settings > Secrets and variables > Actions > New repository secret**
+
+| Secret | Value | Contoh |
+|--------|-------|--------|
+| `DOCKER_BASEURL` | Registry URL | `ghcr.io` |
+| `DOCKER_USERNAME` | GitHub username / org | `ajianaz` |
+| `DOCKER_PASSWORD` | GitHub PAT (classic, scope: `write:packages`) | `ghp_xxxxxxxxxxxx` |
+
+### Cara Buat PAT untuk GHCR
+
+1. GitHub > Settings > Developer settings > **Personal access tokens** > Tokens (classic)
+2. **Generate new token (classic)**
+3. Scopes: centang `write:packages` dan `read:packages`
+4. Copy token-nya, paste ke secret `DOCKER_PASSWORD`
+
+### Tagging
+
+| Trigger | Image Tag |
+|---------|-----------|
+| Push ke `main` | `main`, `sha-abc1234` |
+| Tag `v1.0.0` | `1.0.0`, `1.0`, `latest` |
+| Pull request | Build only, no push |
+
+### Pull Image di Server
+
+```bash
+# Login ke GHCR
+echo $DOCKER_PASSWORD | docker login ghcr.io -u $DOCKER_USERNAME --password-stdin
+
+# Pull image
+docker pull ghcr.io/ajianaz/glm-proxy-go:main
+
+# Atau di docker-compose.yml, ganti `build: .` dengan:
+# image: ghcr.io/ajianaz/glm-proxy-go:main
 ```
 
 ## Available Models
