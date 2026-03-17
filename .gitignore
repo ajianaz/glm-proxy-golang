@@ -1,0 +1,5 @@
+bin/
+*.out
+*.tmp
+data/apikeys.json
+.env
