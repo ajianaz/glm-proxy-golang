@@ -463,7 +463,7 @@ Repo private tidak bisa di-clone sembarangan. Server hanya butuh **3 file**, tid
 ### File yang Perlu Ada di Server
 
 ```
-/opt/glm-proxy/           # atau folder mana saja
+~/serviceku/glm-proxy-golang/           # atau folder mana saja
   .env                    # konfigurasi
   docker-compose.prod.yml # pakai image, bukan build
   deploy.sh               # script deploy (opsional)
@@ -478,13 +478,13 @@ Repo private tidak bisa di-clone sembarangan. Server hanya butuh **3 file**, tid
 ssh user@your-server
 
 # 2. Buat folder
-mkdir -p /opt/glm-proxy/data
+mkdir -p ~/serviceku/glm-proxy-golang/data
 
 # 3. Login ke GHCR (sekali saja, credential tersimpan)
 echo "ghp_xxxxxxxxxxxx" | docker login ghcr.io -u ajianaz --password-stdin
 
 # 4. Buat .env
-cat > /opt/glm-proxy/.env << 'EOF'
+cat > ~/serviceku/glm-proxy-golang/.env << 'EOF'
 ZAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
 DEFAULT_MODEL=glm-4.7
 PORT=3000
@@ -494,7 +494,7 @@ DOCKER_IMAGE=ghcr.io/ajianaz/glm-proxy-go:main
 EOF
 
 # 5. Buat apikeys.json
-cat > /opt/glm-proxy/data/apikeys.json << 'EOF'
+cat > ~/serviceku/glm-proxy-golang/data/apikeys.json << 'EOF'
 {
   "keys": [{
     "key": "pk_your_key",
@@ -510,10 +510,10 @@ cat > /opt/glm-proxy/data/apikeys.json << 'EOF'
 EOF
 
 # 6. Upload docker-compose.prod.yml (dari lokal)
-scp docker-compose.prod.yml user@your-server:/opt/glm-proxy/
+scp docker-compose.prod.yml user@your-server:~/serviceku/glm-proxy-golang/
 
 # 7. Pull & start
-cd /opt/glm-proxy
+cd ~/serviceku/glm-proxy-golang
 docker compose -f docker-compose.prod.yml up -d
 ```
 
@@ -521,7 +521,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 ```bash
 # Opsi A: manual
-cd /opt/glm-proxy
+cd ~/serviceku/glm-proxy-golang
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 
@@ -549,7 +549,7 @@ Tambahkan step di `.github/workflows/docker-publish.yml` setelah build & push:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd /opt/glm-proxy
+            cd ~/serviceku/glm-proxy-golang
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d
 ```
