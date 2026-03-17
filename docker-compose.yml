@@ -17,7 +17,7 @@ services:
       - "traefik.http.routers.glm.rule=Host(`${DOMAIN:-glm.ajianaz.dev}`)"
       - "traefik.http.routers.glm.entrypoints=websecure"
       - "traefik.http.routers.glm.tls=true"
-      - "traefik.http.routers.glm.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.glm.tls.certresolver=myresolver"
       - "traefik.http.services.glm.loadbalancer.server.port=${PORT:-3000}"
     networks:
       - public-net
