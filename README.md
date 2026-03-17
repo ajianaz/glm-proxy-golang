@@ -450,14 +450,117 @@ Di repo GitHub: **Settings > Secrets and variables > Actions > New repository se
 
 ```bash
 # Login ke GHCR
-echo $DOCKER_PASSWORD | docker login ghcr.io -u $DOCKER_USERNAME --password-stdin
+echo $GITHUB_PAT | docker login ghcr.io -u ajianaz --password-stdin
 
 # Pull image
 docker pull ghcr.io/ajianaz/glm-proxy-go:main
-
-# Atau di docker-compose.yml, ganti `build: .` dengan:
-# image: ghcr.io/ajianaz/glm-proxy-go:main
 ```
+
+## Deploy ke Server (Private Repo)
+
+Repo private tidak bisa di-clone sembarangan. Server hanya butuh **3 file**, tidak butuh source code.
+
+### File yang Perlu Ada di Server
+
+```
+/opt/glm-proxy/           # atau folder mana saja
+  .env                    # konfigurasi
+  docker-compose.prod.yml # pakai image, bukan build
+  deploy.sh               # script deploy (opsional)
+  data/
+    apikeys.json          # API keys
+```
+
+### Langkah Deploy (Pertama Kali)
+
+```bash
+# 1. SSH ke server
+ssh user@your-server
+
+# 2. Buat folder
+mkdir -p /opt/glm-proxy/data
+
+# 3. Login ke GHCR (sekali saja, credential tersimpan)
+echo "ghp_xxxxxxxxxxxx" | docker login ghcr.io -u ajianaz --password-stdin
+
+# 4. Buat .env
+cat > /opt/glm-proxy/.env << 'EOF'
+ZAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+DEFAULT_MODEL=glm-4.7
+PORT=3000
+DATA_FILE=/app/data/apikeys.json
+DOMAIN=glm.ajianaz.dev
+DOCKER_IMAGE=ghcr.io/ajianaz/glm-proxy-go:main
+EOF
+
+# 5. Buat apikeys.json
+cat > /opt/glm-proxy/data/apikeys.json << 'EOF'
+{
+  "keys": [{
+    "key": "pk_your_key",
+    "name": "Your Name",
+    "token_limit_per_5h": 100000,
+    "expiry_date": "2027-12-31T23:59:59Z",
+    "created_at": "2026-03-17T00:00:00Z",
+    "last_used": "2026-03-17T00:00:00Z",
+    "total_lifetime_tokens": 0,
+    "usage_windows": []
+  }]
+}
+EOF
+
+# 6. Upload docker-compose.prod.yml (dari lokal)
+scp docker-compose.prod.yml user@your-server:/opt/glm-proxy/
+
+# 7. Pull & start
+cd /opt/glm-proxy
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### Update Deploy (Setelah Push Baru ke Main)
+
+```bash
+# Opsi A: manual
+cd /opt/glm-proxy
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+
+# Opsi B: pakai deploy.sh
+./deploy.sh
+```
+
+### Perbedaan docker-compose.yml vs docker-compose.prod.yml
+
+| | `docker-compose.yml` | `docker-compose.prod.yml` |
+|---|---|---|
+| Image | `build: .` (build lokal) | `image: ghcr.io/...` (pull) |
+| Butuh source code? | Ya | Tidak |
+| Pakai di | Local dev | Server produksi |
+
+### Jika Ingin Auto-Deploy dari GitHub
+
+Tambahkan step di `.github/workflows/docker-publish.yml` setelah build & push:
+
+```yaml
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/glm-proxy
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+```
+
+Secrets yang perlu ditambahkan:
+
+| Secret | Contoh |
+|--------|--------|
+| `SERVER_HOST` | `192.168.1.100` atau `your.server.com` |
+| `SERVER_USER` | `root` atau `deploy` |
+| `SERVER_SSH_KEY` | Private key SSH server (isi lengkap) |
 
 ## Available Models
 

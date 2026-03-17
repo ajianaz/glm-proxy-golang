@@ -1,0 +1,51 @@
+# docker-compose.prod.yml - untuk deploy di server
+# JANGAN edit file ini. Gunakan .env untuk semua konfigurasi.
+#
+# Perbedaan dengan docker-compose.yml:
+#   - build: .          -> image: ghcr.io/... (pull dari registry)
+#   - tidak butuh source code di server
+
+services:
+  glm-proxy:
+    image: ${DOCKER_IMAGE:-ghcr.io/ajianaz/glm-proxy-go:main}
+    container_name: glm-proxy-go
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    environment:
+      - PORT=${PORT:-3000}
+      - ZAI_API_KEY=${ZAI_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-glm-4.7}
+      - DATA_FILE=/app/data/apikeys.json
+    volumes:
+      - ./data:/app/data:rw
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.glm.rule=Host(`${DOMAIN:-glm.ajianaz.dev}`)"
+      - "traefik.http.routers.glm.entrypoints=websecure"
+      - "traefik.http.routers.glm.tls=true"
+      - "traefik.http.routers.glm.tls.certresolver=letsencrypt"
+      - "traefik.http.services.glm.loadbalancer.server.port=${PORT:-3000}"
+    networks:
+      - public-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/server", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  public-net:
+    external: true
