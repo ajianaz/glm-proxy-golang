@@ -116,3 +116,115 @@ func TestExtractOpenAITokens(t *testing.T) {
 		t.Fatalf("expected 0, got %d", got)
 	}
 }
+
+func TestOpenAIProxy_NonStreaming_UpdatesStore(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify stream_options is NOT sent for non-streaming
+		body := make(map[string]interface{})
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["stream_options"] != nil {
+			t.Error("stream_options should not be present in non-streaming request")
+		}
+
+		resp := map[string]interface{}{
+			"id":      "chatcmpl-456",
+			"choices": []interface{}{},
+			"usage": map[string]interface{}{
+				"total_tokens": float64(250),
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream.Close()
+
+	origUpstream := OpenAIUpstream
+	OpenAIUpstream = upstream.URL
+	defer func() { OpenAIUpstream = origUpstream }()
+
+	store := makeTestKeyStore(t)
+	p := &OpenAIProxy{
+		Config: &config.Config{ZaiApiKey: "master-key", DefaultModel: "glm-4.7"},
+		Store:  store,
+	}
+
+	key := &storage.ApiKey{
+		Key:             "pk_test",
+		Name:            "Test",
+		TokenLimitPer5h: 100000,
+		ExpiryDate:      "2099-01-01T00:00:00Z",
+	}
+
+	body := strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	p.Proxy(rec, req, key)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Give goroutine time to update store
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := store.FindKey("pk_test")
+	if updated.TotalLifetimeTokens != 250 {
+		t.Fatalf("expected 250 lifetime tokens in store, got %d", updated.TotalLifetimeTokens)
+	}
+}
+
+func TestOpenAIProxy_NonStreaming_NoUsageField_StillUpdatesLastUsed(t *testing.T) {
+	// Upstream returns no usage field — tokens will be 0
+	// But last_used should still be updated (the fix we made)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"id":      "chatcmpl-789",
+			"choices": []interface{}{},
+			// NO usage field
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream.Close()
+
+	origUpstream := OpenAIUpstream
+	OpenAIUpstream = upstream.URL
+	defer func() { OpenAIUpstream = origUpstream }()
+
+	store := makeTestKeyStore(t)
+	p := &OpenAIProxy{
+		Config: &config.Config{ZaiApiKey: "master-key", DefaultModel: "glm-4.7"},
+		Store:  store,
+	}
+
+	key := &storage.ApiKey{
+		Key:             "pk_test",
+		Name:            "Test",
+		TokenLimitPer5h: 100000,
+		ExpiryDate:      "2099-01-01T00:00:00Z",
+	}
+
+	body := strings.NewReader(`{"model":"gpt-4","messages":[],"stream":false}`)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	p.Proxy(rec, req, key)
+
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := store.FindKey("pk_test")
+	if updated.TotalLifetimeTokens != 0 {
+		t.Fatalf("expected 0 lifetime tokens (no usage field), got %d", updated.TotalLifetimeTokens)
+	}
+	// The critical fix: dirty should be true even with 0 tokens
+	if !store.IsDirty() {
+		t.Fatal("expected dirty=true after request even when upstream returns no usage — last_used should be updated")
+	}
+	// last_used should have changed from initial value
+	if updated.LastUsed == "" {
+		t.Fatal("expected last_used to be set after request")
+	}
+}
