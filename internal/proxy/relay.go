@@ -30,9 +30,8 @@ func relayResponse(w http.ResponseWriter, resp *http.Response, store *storage.Ke
 	if resp.StatusCode == http.StatusOK {
 		go func() {
 			tokens := tokenExtractor(bodyBytes)
-			if tokens > 0 {
-				store.UpdateUsage(keyValue, tokens)
-			}
+			// Always update usage (at minimum sets last_used and dirty flag)
+			store.UpdateUsage(keyValue, tokens)
 		}()
 	}
 }

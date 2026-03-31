@@ -93,7 +93,6 @@ func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, k
 
 	totalTokens := StreamSSE(w, resp.Body, "anthropic")
 
-	if totalTokens > 0 {
-		p.Store.UpdateUsage(keyValue, totalTokens)
-	}
+	// Always update usage (at minimum sets last_used and dirty flag)
+	p.Store.UpdateUsage(keyValue, totalTokens)
 }

@@ -67,6 +67,18 @@ func readAndInjectModel(body io.ReadCloser, path, method, model string) (io.Read
 	// Only inject model for relevant paths
 	if strings.Contains(path, "/chat/completions") || strings.Contains(path, "/completions") || strings.Contains(path, "/messages") {
 		bodyMap["model"] = model
+
+		// Request usage stats in SSE streams so we can track tokens
+		if stream, _ := bodyMap["stream"].(bool); stream {
+			if strings.Contains(path, "/messages") {
+				// Anthropic: stream already includes usage by default, no extra flag needed
+			} else {
+				// OpenAI-compatible: need stream_options to get usage in last chunk
+				bodyMap["stream_options"] = map[string]interface{}{
+					"include_usage": true,
+				}
+			}
+		}
 	}
 
 	b, err := json.Marshal(bodyMap)

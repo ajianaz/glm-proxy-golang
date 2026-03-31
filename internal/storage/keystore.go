@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -72,7 +73,11 @@ func (ks *KeyStore) flushLoop() {
 		case <-ticker.C:
 			ks.mu.Lock()
 			if ks.dirty {
-				_ = ks.save()
+				if err := ks.save(); err != nil {
+					log.Printf("[keystore] flush error: %v", err)
+				} else {
+					log.Printf("[keystore] flushed to %s", ks.dataFile)
+				}
 				ks.dirty = false
 			}
 			ks.mu.Unlock()
@@ -165,9 +170,18 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 			}
 			k.UsageWindows = cleaned
 			ks.dirty = true
+			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d lifetime=%d windows=%d",
+				k.Key, tokensUsed, k.TotalLifetimeTokens, len(k.UsageWindows))
 			return
 		}
 	}
+}
+
+// IsDirty returns whether there are unsaved changes (for testing).
+func (ks *KeyStore) IsDirty() bool {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	return ks.dirty
 }
 
 // AllKeys returns a copy of all keys (for admin endpoints if needed).
