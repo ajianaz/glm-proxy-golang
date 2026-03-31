@@ -1,11 +1,9 @@
-name: Build, Push & Deploy
+name: Build & Push
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
+  tags: ["v*"]
 
 jobs:
   build-and-push:
@@ -34,7 +32,7 @@ jobs:
         with:
           images: ${{ secrets.DOCKER_BASEURL }}/${{ secrets.DOCKER_USERNAME }}/glm-proxy-go
           tags: |
-            type=ref,event=branch
+            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
@@ -43,37 +41,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    environment: OCI
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: 22
-          script: |
-            cd ~/serviceku/glm-proxy-golang
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
-            sleep 5
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "Deploy OK - health 200"
-            else
-              echo "Health failed (HTTP ${HTTP_CODE})"
-              docker compose -f docker-compose.prod.yml logs --tail=20
-              exit 1
-            fi
