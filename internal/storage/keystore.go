@@ -136,42 +136,46 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	fiveHoursAgo := time.Now().Add(-5 * time.Hour).UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
+	fiveHoursAgo := now.Add(-5 * time.Hour)
 
 	for i := range ks.data.Keys {
 		if ks.data.Keys[i].Key == keyValue {
 			k := &ks.data.Keys[i]
-			k.LastUsed = now
+			k.LastUsed = now.Format(time.RFC3339)
 			k.TotalLifetimeTokens += tokensUsed
 
-			// Find or create current window
-			found := false
-			for j := range k.UsageWindows {
-				if k.UsageWindows[j].WindowStart >= fiveHoursAgo {
-					k.UsageWindows[j].TokensUsed += tokensUsed
-					found = true
-					break
+			// Sum all active window tokens and find earliest window start
+			var activeTokens int
+			var earliestStart time.Time
+			for _, w := range k.UsageWindows {
+				ws, err := time.Parse(time.RFC3339, w.WindowStart)
+				if err != nil {
+					continue
 				}
-			}
-			if !found {
-				k.UsageWindows = append(k.UsageWindows, UsageWindow{
-					WindowStart: now,
-					TokensUsed:  tokensUsed,
-				})
+				if !ws.Before(fiveHoursAgo) {
+					activeTokens += w.TokensUsed
+					if earliestStart.IsZero() || ws.Before(earliestStart) {
+						earliestStart = ws
+					}
+				}
 			}
 
-			// Clean up old windows
-			cleaned := k.UsageWindows[:0]
-			for _, w := range k.UsageWindows {
-				if w.WindowStart >= fiveHoursAgo {
-					cleaned = append(cleaned, w)
-				}
+			// Consolidate all active windows + new tokens into a single window
+			activeTokens += tokensUsed
+			if earliestStart.IsZero() {
+				earliestStart = now
 			}
-			k.UsageWindows = cleaned
+			k.UsageWindows = []UsageWindow{
+				{
+					WindowStart: earliestStart.Format(time.RFC3339),
+					TokensUsed:  activeTokens,
+				},
+			}
+
 			ks.dirty = true
-			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d lifetime=%d windows=%d",
-				k.Key, tokensUsed, k.TotalLifetimeTokens, len(k.UsageWindows))
+			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d lifetime=%d active=%d",
+				k.Key, tokensUsed, k.TotalLifetimeTokens, activeTokens)
 			return
 		}
 	}
