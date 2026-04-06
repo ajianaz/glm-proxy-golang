@@ -64,9 +64,11 @@ func readAndInjectModel(body io.ReadCloser, path, method, model string) (io.Read
 	}
 	body.Close()
 
-	// Only inject model for relevant paths
+	// Only inject model for relevant paths, and only if client didn't specify one
 	if strings.Contains(path, "/chat/completions") || strings.Contains(path, "/completions") || strings.Contains(path, "/messages") {
-		bodyMap["model"] = model
+		if _, hasModel := bodyMap["model"]; !hasModel {
+			bodyMap["model"] = model
+		}
 
 		// Request usage stats in SSE streams so we can track tokens
 		if stream, _ := bodyMap["stream"].(bool); stream {

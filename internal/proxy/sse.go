@@ -15,7 +15,6 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) int {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		io.Copy(w, body)
-		body.Close()
 		return 0
 	}
 
@@ -54,11 +53,10 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) int {
 	}
 
 	if err := scanner.Err(); err != nil && err != io.EOF {
-		fmt.Fprintf(w, "data: {\"error\": \"stream interrupted\"}\n\n")
+		fmt.Fprint(w, "event: error\ndata: {\"error\": \"stream interrupted\"}\n\n")
 		flusher.Flush()
 	}
 
-	body.Close()
 	return totalTokens
 }
 

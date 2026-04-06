@@ -135,8 +135,12 @@ func TestStats_ValidKey(t *testing.T) {
 
 	var body map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&body)
-	if body["key"] != "pk_test_valid" {
-		t.Fatalf("expected pk_test_valid, got %v", body["key"])
+	// Key should be masked, not full key
+	if body["key"] == "pk_test_valid" {
+		t.Fatalf("expected masked key, got full key %v", body["key"])
+	}
+	if body["key"] != "pk_t...lid" {
+		t.Fatalf("expected masked pk_t...lid, got %v", body["key"])
 	}
 	if body["is_expired"] != false {
 		t.Fatalf("expected not expired, got %v", body["is_expired"])

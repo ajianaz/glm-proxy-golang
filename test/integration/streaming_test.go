@@ -185,7 +185,7 @@ func TestModelInjection(t *testing.T) {
 	server := httptest.NewServer(handler.NewRouter(cfg, store))
 	defer server.Close()
 
-	// Client requests gpt-4, but server should inject glm-4.7
+	// Client requests gpt-4, proxy should preserve the client's model (not override)
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 	req, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer pk_test")
@@ -201,8 +201,9 @@ func TestModelInjection(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	if receivedModel != "glm-4.7" {
-		t.Fatalf("expected model to be injected as glm-4.7, got %s", receivedModel)
+	// Client model should be preserved, not overridden
+	if receivedModel != "gpt-4" {
+		t.Fatalf("expected client model gpt-4 to be preserved, got %s", receivedModel)
 	}
 }
 

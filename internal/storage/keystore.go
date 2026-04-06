@@ -11,11 +11,13 @@ import (
 
 // KeyStore manages in-memory API key data with periodic disk flushing.
 type KeyStore struct {
-	mu          sync.RWMutex
-	data        ApiKeysData
-	dataFile    string
-	dirty       bool
-	stopFlush   chan struct{}
+	mu        sync.RWMutex
+	data      ApiKeysData
+	dataFile  string
+	dirty     bool
+	stopFlush chan struct{}
+	closed    bool
+	closeOnce sync.Once
 }
 
 // NewKeyStore loads API keys from the given JSON file into memory.
@@ -88,13 +90,17 @@ func (ks *KeyStore) flushLoop() {
 }
 
 // Close stops the flush goroutine and does a final save if dirty.
+// Safe to call multiple times.
 func (ks *KeyStore) Close() {
-	close(ks.stopFlush)
-	ks.mu.Lock()
-	if ks.dirty {
-		_ = ks.save()
-	}
-	ks.mu.Unlock()
+	ks.closeOnce.Do(func() {
+		close(ks.stopFlush)
+		ks.mu.Lock()
+		if ks.dirty {
+			_ = ks.save()
+		}
+		ks.closed = true
+		ks.mu.Unlock()
+	})
 }
 
 // FindKey looks up an API key by its value.
@@ -113,7 +119,7 @@ func (ks *KeyStore) FindKey(key string) (*ApiKey, bool) {
 // GetStats returns a StatsResponse for a given key.
 func (ks *KeyStore) GetStats(key *ApiKey, info *RateLimitInfo, model string) StatsResponse {
 	return StatsResponse{
-		Key:               key.Key,
+		Key:               MaskKey(key.Key),
 		Name:              key.Name,
 		Model:             model,
 		TokenLimitPer5h:   key.TokenLimitPer5h,
@@ -175,10 +181,18 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 
 			ks.dirty = true
 			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d lifetime=%d active=%d",
-				k.Key, tokensUsed, k.TotalLifetimeTokens, activeTokens)
+				MaskKey(k.Key), tokensUsed, k.TotalLifetimeTokens, activeTokens)
 			return
 		}
 	}
+}
+
+// MaskKey returns a masked version of the API key for logging and responses.
+func MaskKey(key string) string {
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "..." + key[len(key)-3:]
 }
 
 // IsDirty returns whether there are unsaved changes (for testing).
