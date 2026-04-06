@@ -50,20 +50,18 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	}
 
 	// Execute
-	client := &http.Client{}
-	resp, err := client.Do(upstreamReq)
+	resp, err := sharedClient.Do(upstreamReq)
 	if err != nil {
 		WriteError(w, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
-	defer resp.Body.Close()
-
-	// Check for SSE streaming
+	// Check for SSE streaming (body closed by StreamSSE)
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		p.streamSSE(w, resp, apiKey.Key)
 		return
 	}
+	defer resp.Body.Close()
 
 	// Non-streaming: relay response and track tokens
 	relayResponse(w, resp, p.Store, apiKey.Key, extractAnthropicTokens)
