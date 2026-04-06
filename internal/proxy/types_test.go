@@ -49,7 +49,8 @@ func TestUpstreamKey(t *testing.T) {
 	}
 }
 
-func TestReadAndInjectModel(t *testing.T) {
+func TestReadAndInjectModel_ClientModelPreserved(t *testing.T) {
+	// When client sends a model, it should be preserved (not overwritten)
 	body := strings.NewReader(`{"model": "gpt-4", "messages": []}`)
 	rc := ioReadCloser(body)
 
@@ -60,14 +61,14 @@ func TestReadAndInjectModel(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(injected).Decode(&result)
-	if result["model"] != "glm-4.7" {
-		t.Fatalf("expected model to be injected, got %v", result["model"])
+	if result["model"] != "gpt-4" {
+		t.Fatalf("expected client model gpt-4 to be preserved, got %v", result["model"])
 	}
 }
 
-func TestReadAndInjectModel_StreamOptionsInjected(t *testing.T) {
-	// When stream:true, stream_options should be injected for OpenAI paths
-	body := strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+func TestReadAndInjectModel_FallbackWhenNoModel(t *testing.T) {
+	// When client doesn't send a model, fallback should be used
+	body := strings.NewReader(`{"messages": []}`)
 	rc := ioReadCloser(body)
 
 	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7")
@@ -77,9 +78,28 @@ func TestReadAndInjectModel_StreamOptionsInjected(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(injected).Decode(&result)
-
 	if result["model"] != "glm-4.7" {
-		t.Fatalf("expected model glm-4.7, got %v", result["model"])
+		t.Fatalf("expected fallback model glm-4.7, got %v", result["model"])
+	}
+}
+
+func TestReadAndInjectModel_StreamOptionsInjected(t *testing.T) {
+	// When stream:true, stream_options should be injected for OpenAI paths
+	// Client model should be preserved (not overwritten)
+	body := strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	rc := io.NopCloser(body)
+
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(injected).Decode(&result)
+
+	// Client model should be preserved
+	if result["model"] != "gpt-4" {
+		t.Fatalf("expected client model gpt-4 to be preserved, got %v", result["model"])
 	}
 
 	so, ok := result["stream_options"].(map[string]interface{})
