@@ -34,11 +34,6 @@ services:
           memory: 128M
         reservations:
           memory: 32M
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "/server", "--healthcheck"]
       interval: 30s

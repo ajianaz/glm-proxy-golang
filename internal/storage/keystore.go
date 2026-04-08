@@ -77,10 +77,11 @@ func (ks *KeyStore) flushLoop() {
 			if ks.dirty {
 				if err := ks.save(); err != nil {
 					log.Printf("[keystore] flush error: %v", err)
+					// Keep dirty=true so next tick retries
 				} else {
 					log.Printf("[keystore] flushed to %s", ks.dataFile)
+					ks.dirty = false
 				}
-				ks.dirty = false
 			}
 			ks.mu.Unlock()
 		case <-ks.stopFlush:
@@ -179,7 +180,11 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 				},
 			}
 
-			ks.dirty = true
+			// Save immediately to ensure data persists even if container restarts
+			if err := ks.save(); err != nil {
+				log.Printf("[keystore] UpdateUsage save error: %v", err)
+				ks.dirty = true // keep dirty so flush loop retries
+			}
 			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d lifetime=%d active=%d",
 				MaskKey(k.Key), tokensUsed, k.TotalLifetimeTokens, activeTokens)
 			return
