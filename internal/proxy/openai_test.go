@@ -213,18 +213,22 @@ func TestOpenAIProxy_NonStreaming_NoUsageField_StillUpdatesLastUsed(t *testing.T
 	rec := httptest.NewRecorder()
 	p.Proxy(rec, req, key)
 
-	time.Sleep(100 * time.Millisecond)
+	// No need for time.Sleep — tracking is now synchronous
 
 	updated, _ := store.FindKey("pk_test")
 	if updated.TotalLifetimeTokens != 0 {
 		t.Fatalf("expected 0 lifetime tokens (no usage field), got %d", updated.TotalLifetimeTokens)
 	}
-	// The critical fix: dirty should be true even with 0 tokens
-	if !store.IsDirty() {
-		t.Fatal("expected dirty=true after request even when upstream returns no usage — last_used should be updated")
+	// Since UpdateUsage saves immediately, dirty should be false after successful save
+	if store.IsDirty() {
+		t.Fatal("expected dirty=false after synchronous save in UpdateUsage")
 	}
 	// last_used should have changed from initial value
 	if updated.LastUsed == "" {
 		t.Fatal("expected last_used to be set after request")
+	}
+	// TotalRequests should be incremented even with 0 tokens
+	if updated.TotalRequests != 1 {
+		t.Fatalf("expected 1 total request, got %d", updated.TotalRequests)
 	}
 }

@@ -55,10 +55,10 @@ func (p *OpenAIProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *stor
 		WriteError(w, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
+
 	// Check for SSE streaming
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
-		// Body closed by StreamSSE internally
 		p.streamSSE(w, resp, apiKey.Key)
 		return
 	}
@@ -93,7 +93,8 @@ func (p *OpenAIProxy) streamSSE(w http.ResponseWriter, resp *http.Response, keyV
 	w.WriteHeader(resp.StatusCode)
 
 	totalTokens := StreamSSE(w, resp.Body, "openai")
+	// resp.Body is closed by StreamSSE via defer
 
-	// Always update usage (at minimum sets last_used and dirty flag)
+	// Always update usage — records the request and any partial tokens collected
 	p.Store.UpdateUsage(keyValue, totalTokens)
 }

@@ -131,9 +131,10 @@ func TestKeyStore_UpdateUsage_ZeroTokens_SetsDirtyAndLastUsed(t *testing.T) {
 		t.Fatalf("expected 0 lifetime tokens, got %d", key.TotalLifetimeTokens)
 	}
 
-	// dirty flag should be set so disk gets updated
-	if !ks.dirty {
-		t.Fatal("expected dirty flag to be true after UpdateUsage with 0 tokens")
+	// Since UpdateUsage saves immediately, dirty should be false after successful save.
+	// The important thing is that last_used was updated and data persisted.
+	if ks.dirty {
+		t.Fatal("expected dirty flag to be false after UpdateUsage saved successfully")
 	}
 }
 
