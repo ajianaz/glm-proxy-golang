@@ -134,6 +134,7 @@ func (ks *KeyStore) GetStats(key *ApiKey, info *RateLimitInfo, model string) Sta
 			WindowEndsAt:              info.WindowEnd,
 			RemainingTokens:           max(0, info.TokensLimit-info.TokensUsed),
 		},
+		TotalRequests:       key.TotalRequests,
 		TotalLifetimeTokens: key.TotalLifetimeTokens,
 	}
 }
@@ -150,6 +151,7 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 		if ks.data.Keys[i].Key == keyValue {
 			k := &ks.data.Keys[i]
 			k.LastUsed = now.Format(time.RFC3339)
+			k.TotalRequests++
 			k.TotalLifetimeTokens += tokensUsed
 
 			// Sum all active window tokens and find earliest window start
@@ -185,8 +187,8 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 				log.Printf("[keystore] UpdateUsage save error: %v", err)
 				ks.dirty = true // keep dirty so flush loop retries
 			}
-			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d lifetime=%d active=%d",
-				MaskKey(k.Key), tokensUsed, k.TotalLifetimeTokens, activeTokens)
+			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d requests=%d lifetime=%d active=%d",
+				MaskKey(k.Key), tokensUsed, k.TotalRequests, k.TotalLifetimeTokens, activeTokens)
 			return
 		}
 	}

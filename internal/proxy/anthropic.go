@@ -55,7 +55,8 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 		WriteError(w, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
-	// Check for SSE streaming (body closed by StreamSSE)
+
+	// Check for SSE streaming
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		p.streamSSE(w, resp, apiKey.Key)
@@ -90,7 +91,8 @@ func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, k
 	w.WriteHeader(resp.StatusCode)
 
 	totalTokens := StreamSSE(w, resp.Body, "anthropic")
+	// resp.Body is closed by StreamSSE via defer
 
-	// Always update usage (at minimum sets last_used and dirty flag)
+	// Always update usage — records the request and any partial tokens collected
 	p.Store.UpdateUsage(keyValue, totalTokens)
 }

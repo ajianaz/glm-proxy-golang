@@ -18,6 +18,7 @@ type ApiKey struct {
 	ExpiryDate          string        `json:"expiry_date"`
 	CreatedAt           string        `json:"created_at"`
 	LastUsed            string        `json:"last_used"`
+	TotalRequests       int           `json:"total_requests"`
 	TotalLifetimeTokens int           `json:"total_lifetime_tokens"`
 	UsageWindows        []UsageWindow `json:"usage_windows"`
 }
@@ -55,6 +56,7 @@ type StatsResponse struct {
 	LastUsed            string       `json:"last_used"`
 	IsExpired           bool         `json:"is_expired"`
 	CurrentUsage        CurrentUsage `json:"current_usage"`
+	TotalRequests       int          `json:"total_requests"`
 	TotalLifetimeTokens int          `json:"total_lifetime_tokens"`
 }
 

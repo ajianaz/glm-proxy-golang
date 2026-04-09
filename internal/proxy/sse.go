@@ -11,7 +11,10 @@ import (
 
 // StreamSSE reads from upstream body and writes SSE chunks to the client.
 // Returns the total tokens parsed from the stream.
+// Caller is responsible for closing body.
 func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) int {
+	defer body.Close()
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		io.Copy(w, body)
