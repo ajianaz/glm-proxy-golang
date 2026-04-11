@@ -140,7 +140,7 @@ func (ks *KeyStore) GetStats(key *ApiKey, info *RateLimitInfo, model string) Sta
 }
 
 // UpdateUsage atomically updates token usage for a key.
-func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
+func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens int) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
@@ -154,8 +154,8 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 			k.TotalRequests++
 			k.TotalLifetimeTokens += tokensUsed
 
-			// Sum all active window tokens and find earliest window start
-			var activeTokens int
+			// Sum all active window data and find earliest window start
+			var activeTokens, activeRequests, activeCached int
 			var earliestStart time.Time
 			for _, w := range k.UsageWindows {
 				ws, err := time.Parse(time.RFC3339, w.WindowStart)
@@ -164,21 +164,27 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 				}
 				if !ws.Before(fiveHoursAgo) {
 					activeTokens += w.TokensUsed
+					activeRequests += w.Requests
+					activeCached += w.CachedTokens
 					if earliestStart.IsZero() || ws.Before(earliestStart) {
 						earliestStart = ws
 					}
 				}
 			}
 
-			// Consolidate all active windows + new tokens into a single window
+			// Consolidate all active windows + new data into a single window
 			activeTokens += tokensUsed
+			activeRequests++
+			activeCached += cachedTokens
 			if earliestStart.IsZero() {
 				earliestStart = now
 			}
 			k.UsageWindows = []UsageWindow{
 				{
-					WindowStart: earliestStart.Format(time.RFC3339),
-					TokensUsed:  activeTokens,
+					WindowStart:  earliestStart.Format(time.RFC3339),
+					TokensUsed:   activeTokens,
+					Requests:     activeRequests,
+					CachedTokens: activeCached,
 				},
 			}
 
@@ -187,8 +193,8 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int) {
 				log.Printf("[keystore] UpdateUsage save error: %v", err)
 				ks.dirty = true // keep dirty so flush loop retries
 			}
-			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d requests=%d lifetime=%d active=%d",
-				MaskKey(k.Key), tokensUsed, k.TotalRequests, k.TotalLifetimeTokens, activeTokens)
+			log.Printf("[keystore] UpdateUsage: key=%s tokens=%d cached=%d requests=%d lifetime=%d active=%d",
+				MaskKey(k.Key), tokensUsed, cachedTokens, k.TotalRequests, k.TotalLifetimeTokens, activeTokens)
 			return
 		}
 	}

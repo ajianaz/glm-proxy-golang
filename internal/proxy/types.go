@@ -25,6 +25,12 @@ func GetModelForKey(key *storage.ApiKey, defaultModel string) string {
 	return "glm-4.7"
 }
 
+// TokenResult holds extracted token counts from an upstream response.
+type TokenResult struct {
+	Total   int
+	Cached  int
+}
+
 // WriteError writes a JSON error response.
 func WriteError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")

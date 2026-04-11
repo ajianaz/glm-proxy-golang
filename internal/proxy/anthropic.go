@@ -68,19 +68,25 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	relayResponse(w, resp, p.Store, apiKey.Key, extractAnthropicTokens)
 }
 
-// extractAnthropicTokens parses input_tokens + output_tokens from Anthropic usage.
-func extractAnthropicTokens(body []byte) int {
+// extractAnthropicTokens parses all token fields from Anthropic usage response.
+// Anthropic cache tokens are separate from input_tokens, must sum all for accuracy.
+func extractAnthropicTokens(body []byte) TokenResult {
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0
+		return TokenResult{}
 	}
 	usage, ok := result["usage"].(map[string]interface{})
 	if !ok {
-		return 0
+		return TokenResult{}
 	}
 	input, _ := usage["input_tokens"].(float64)
 	output, _ := usage["output_tokens"].(float64)
-	return int(input) + int(output)
+	cacheRead, _ := usage["cache_read_input_tokens"].(float64)
+	cacheCreation, _ := usage["cache_creation_input_tokens"].(float64)
+	return TokenResult{
+		Total:  int(input) + int(output) + int(cacheRead) + int(cacheCreation),
+		Cached: int(cacheRead) + int(cacheCreation),
+	}
 }
 
 // streamSSE proxies an SSE stream with inline token counting.
@@ -94,5 +100,5 @@ func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, k
 	// resp.Body is closed by StreamSSE via defer
 
 	// Always update usage — records the request and any partial tokens collected
-	p.Store.UpdateUsage(keyValue, totalTokens)
+	p.Store.UpdateUsage(keyValue, totalTokens.Total, totalTokens.Cached)
 }

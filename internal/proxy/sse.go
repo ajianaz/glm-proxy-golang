@@ -10,21 +10,21 @@ import (
 )
 
 // StreamSSE reads from upstream body and writes SSE chunks to the client.
-// Returns the total tokens parsed from the stream.
-// Caller is responsible for closing body.
-func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) int {
+// Returns the tokens parsed from the stream.
+// resp.Body is closed via defer.
+func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResult {
 	defer body.Close()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		io.Copy(w, body)
-		return 0
+		return TokenResult{}
 	}
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	totalTokens := 0
+	var result TokenResult
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -44,8 +44,9 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) int {
 				break
 			}
 
-			tokens := parseSSETokens(data, mode)
-			totalTokens += tokens
+			chunk := parseSSETokens(data, mode)
+			result.Total += chunk.Total
+			result.Cached += chunk.Cached
 
 			fmt.Fprintf(w, "data: %s\n", data)
 		} else {
@@ -60,31 +61,42 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) int {
 		flusher.Flush()
 	}
 
-	return totalTokens
+	return result
 }
 
 // parseSSETokens attempts to extract token counts from a single SSE data chunk.
-func parseSSETokens(data string, mode string) int {
+func parseSSETokens(data string, mode string) TokenResult {
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(data), &m); err != nil {
-		return 0
+		return TokenResult{}
 	}
 
 	usage, ok := m["usage"].(map[string]interface{})
 	if !ok {
-		return 0
+		return TokenResult{}
 	}
 
 	switch mode {
 	case "openai":
 		if total, ok := usage["total_tokens"].(float64); ok {
-			return int(total)
+			cached := 0
+			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+				if ct, ok := details["cached_tokens"].(float64); ok {
+					cached = int(ct)
+				}
+			}
+			return TokenResult{Total: int(total), Cached: cached}
 		}
 	case "anthropic":
 		input, _ := usage["input_tokens"].(float64)
 		output, _ := usage["output_tokens"].(float64)
-		return int(input) + int(output)
+		cacheRead, _ := usage["cache_read_input_tokens"].(float64)
+		cacheCreation, _ := usage["cache_creation_input_tokens"].(float64)
+		return TokenResult{
+			Total:  int(input) + int(output) + int(cacheRead) + int(cacheCreation),
+			Cached: int(cacheRead) + int(cacheCreation),
+		}
 	}
 
-	return 0
+	return TokenResult{}
 }
