@@ -107,13 +107,13 @@ func TestOpenAIProxy_NonStreaming(t *testing.T) {
 
 func TestExtractOpenAITokens(t *testing.T) {
 	body := []byte(`{"usage":{"total_tokens":42}}`)
-	if got := extractOpenAITokens(body); got != 42 {
-		t.Fatalf("expected 42, got %d", got)
+	if got := extractOpenAITokens(body); got.Total != 42 {
+		t.Fatalf("expected 42, got %d", got.Total)
 	}
 
 	body2 := []byte(`{"no":"usage"}`)
-	if got := extractOpenAITokens(body2); got != 0 {
-		t.Fatalf("expected 0, got %d", got)
+	if got := extractOpenAITokens(body2); got.Total != 0 {
+		t.Fatalf("expected 0, got %d", got.Total)
 	}
 }
 

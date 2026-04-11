@@ -84,7 +84,18 @@ func TestAnthropicProxy_NonStreaming(t *testing.T) {
 
 func TestExtractAnthropicTokens(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":10,"output_tokens":20}}`)
-	if got := extractAnthropicTokens(body); got != 30 {
-		t.Fatalf("expected 30, got %d", got)
+	if got := extractAnthropicTokens(body); got.Total != 30 {
+		t.Fatalf("expected 30, got %d", got.Total)
+	}
+}
+
+func TestExtractAnthropicTokens_WithCache(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":5}}`)
+	result := extractAnthropicTokens(body)
+	if result.Total != 65 {
+		t.Fatalf("expected 65 total (10+20+30+5), got %d", result.Total)
+	}
+	if result.Cached != 35 {
+		t.Fatalf("expected 35 cached (30+5), got %d", result.Cached)
 	}
 }

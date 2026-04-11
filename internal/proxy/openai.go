@@ -69,20 +69,28 @@ func (p *OpenAIProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *stor
 }
 
 // extractOpenAITokens parses total_tokens from OpenAI usage response.
-func extractOpenAITokens(body []byte) int {
+// OpenAI total_tokens already includes cached tokens in the count.
+// prompt_tokens_details.cached_tokens is tracked separately for visibility.
+func extractOpenAITokens(body []byte) TokenResult {
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0
+		return TokenResult{}
 	}
 	usage, ok := result["usage"].(map[string]interface{})
 	if !ok {
-		return 0
+		return TokenResult{}
 	}
 	total, ok := usage["total_tokens"].(float64)
 	if !ok {
-		return 0
+		return TokenResult{}
 	}
-	return int(total)
+	cached := 0
+	if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+		if ct, ok := details["cached_tokens"].(float64); ok {
+			cached = int(ct)
+		}
+	}
+	return TokenResult{Total: int(total), Cached: cached}
 }
 
 // streamSSE proxies an SSE stream with inline token counting.
@@ -96,5 +104,5 @@ func (p *OpenAIProxy) streamSSE(w http.ResponseWriter, resp *http.Response, keyV
 	// resp.Body is closed by StreamSSE via defer
 
 	// Always update usage — records the request and any partial tokens collected
-	p.Store.UpdateUsage(keyValue, totalTokens)
+	p.Store.UpdateUsage(keyValue, totalTokens.Total, totalTokens.Cached)
 }

@@ -65,7 +65,7 @@ func TestKeyStore_UpdateUsage(t *testing.T) {
 	}
 	defer ks.Close()
 
-	ks.UpdateUsage("pk_test1", 500)
+	ks.UpdateUsage("pk_test1", 500, 0)
 
 	key, _ := ks.FindKey("pk_test1")
 	if key.TotalLifetimeTokens != 500 {
@@ -117,7 +117,7 @@ func TestKeyStore_UpdateUsage_ZeroTokens_SetsDirtyAndLastUsed(t *testing.T) {
 	oldLastUsed := "2026-01-01T00:00:00Z"
 
 	// Update with 0 tokens — this was the bug: previously skipped entirely
-	ks.UpdateUsage("pk_test1", 0)
+	ks.UpdateUsage("pk_test1", 0, 0)
 
 	key, _ := ks.FindKey("pk_test1")
 
@@ -162,7 +162,7 @@ func TestKeyStore_FlushWritesToDisk(t *testing.T) {
 	// No defer Close — we call it manually
 
 	// Update usage to make dirty
-	ks.UpdateUsage("pk_test1", 500)
+	ks.UpdateUsage("pk_test1", 500, 0)
 
 	// Force a save via Close (which does final flush)
 	ks.Close()
@@ -209,7 +209,7 @@ func TestKeyStore_CloseFlushesDirtyData(t *testing.T) {
 	}
 
 	// Add usage then immediately close (don't wait for 30s ticker)
-	ks.UpdateUsage("pk_flush", 1234)
+	ks.UpdateUsage("pk_flush", 1234, 0)
 	ks.Close()
 
 	// Read file directly from disk
@@ -253,9 +253,9 @@ func TestKeyStore_UpdateUsage_MultipleRequests(t *testing.T) {
 	defer ks.Close()
 
 	// Simulate multiple requests
-	ks.UpdateUsage("pk_multi", 100)
-	ks.UpdateUsage("pk_multi", 200)
-	ks.UpdateUsage("pk_multi", 50)
+	ks.UpdateUsage("pk_multi", 100, 0)
+	ks.UpdateUsage("pk_multi", 200, 0)
+	ks.UpdateUsage("pk_multi", 50, 0)
 
 	key, _ := ks.FindKey("pk_multi")
 	if key.TotalLifetimeTokens != 350 {
@@ -296,7 +296,7 @@ func TestKeyStore_UpdateUsage_WindowStartIsRFC3339(t *testing.T) {
 	}
 	defer ks.Close()
 
-	ks.UpdateUsage("pk_fmt", 100)
+	ks.UpdateUsage("pk_fmt", 100, 0)
 
 	key, _ := ks.FindKey("pk_fmt")
 
@@ -345,7 +345,7 @@ func TestKeyStore_UpdateUsage_ConsolidatesMultipleWindows(t *testing.T) {
 	defer ks.Close()
 
 	// Update with 50 new tokens
-	ks.UpdateUsage("pk_consolidate", 50)
+	ks.UpdateUsage("pk_consolidate", 50, 0)
 
 	key, _ := ks.FindKey("pk_consolidate")
 
@@ -403,7 +403,7 @@ func TestKeyStore_UpdateUsage_CleansUpOldWindows(t *testing.T) {
 	}
 	defer ks.Close()
 
-	ks.UpdateUsage("pk_cleanup", 50)
+	ks.UpdateUsage("pk_cleanup", 50, 0)
 
 	key, _ := ks.FindKey("pk_cleanup")
 
@@ -452,7 +452,7 @@ func TestKeyStore_UpdateUsage_MalformedWindowStartSkipped(t *testing.T) {
 	}
 	defer ks.Close()
 
-	ks.UpdateUsage("pk_malformed", 50)
+	ks.UpdateUsage("pk_malformed", 50, 0)
 
 	key, _ := ks.FindKey("pk_malformed")
 
@@ -487,7 +487,7 @@ func TestKeyStore_UpdateUsage_DiskPersistenceRFC3339(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ks.UpdateUsage("pk_persist", 777)
+	ks.UpdateUsage("pk_persist", 777, 0)
 	ks.Close() // force flush to disk
 
 	// Read raw file and verify format
@@ -547,7 +547,7 @@ func TestKeyStore_UpdateUsage_UnknownKeyIgnored(t *testing.T) {
 	defer ks.Close()
 
 	// Should not panic or cause issues
-	ks.UpdateUsage("pk_nonexistent", 500)
+	ks.UpdateUsage("pk_nonexistent", 500, 0)
 
 	key, _ := ks.FindKey("pk_exists")
 	if key.TotalLifetimeTokens != 0 {

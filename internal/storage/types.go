@@ -6,6 +6,8 @@ import "time"
 type UsageWindow struct {
 	WindowStart string `json:"window_start"`
 	TokensUsed  int    `json:"tokens_used"`
+	Requests    int    `json:"requests"`
+	CachedTokens int   `json:"cached_tokens"`
 }
 
 // ApiKey represents a single API key with metadata.

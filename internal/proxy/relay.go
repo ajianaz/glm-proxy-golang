@@ -8,7 +8,7 @@ import (
 )
 
 // relayResponse forwards a non-streaming response, then tracks tokens synchronously.
-func relayResponse(w http.ResponseWriter, resp *http.Response, store *storage.KeyStore, keyValue string, tokenExtractor func([]byte) int) {
+func relayResponse(w http.ResponseWriter, resp *http.Response, store *storage.KeyStore, keyValue string, tokenExtractor func([]byte) TokenResult) {
 	// Copy response headers
 	for k, vals := range resp.Header {
 		for _, v := range vals {
@@ -28,8 +28,6 @@ func relayResponse(w http.ResponseWriter, resp *http.Response, store *storage.Ke
 	w.Write(bodyBytes)
 
 	// Track tokens synchronously to ensure no data loss on shutdown/restart.
-	// Extract tokens regardless of status code — some upstream errors still
-	// include usage data, and we always want to record the request happened.
-	tokens := tokenExtractor(bodyBytes)
-	store.UpdateUsage(keyValue, tokens)
+	result := tokenExtractor(bodyBytes)
+	store.UpdateUsage(keyValue, result.Total, result.Cached)
 }
