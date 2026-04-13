@@ -34,6 +34,7 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(store))
 		r.Use(middleware.RateLimit())
+		r.Use(middleware.ModelValidate(cfg))
 
 		r.Get("/stats", Stats(store, cfg.DefaultModel))
 

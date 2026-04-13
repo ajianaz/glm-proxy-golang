@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 )
 
@@ -10,6 +11,7 @@ type Config struct {
 	DataFile       string
 	ZaiApiKey      string
 	DefaultModel   string
+	AllowedModels  []string
 	FlushInterval  time.Duration
 }
 
@@ -19,8 +21,24 @@ func Load() *Config {
 		DataFile:       getEnv("DATA_FILE", "data/apikeys.json"),
 		ZaiApiKey:      os.Getenv("ZAI_API_KEY"),
 		DefaultModel:   getEnv("DEFAULT_MODEL", "glm-4.7"),
+		AllowedModels:  parseAllowedModels(os.Getenv("ALLOWED_MODELS")),
 		FlushInterval:  30 * time.Second,
 	}
+}
+
+func parseAllowedModels(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func getEnv(key, fallback string) string {
