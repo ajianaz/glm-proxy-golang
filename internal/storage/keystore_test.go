@@ -133,7 +133,7 @@ func TestKeyStore_UpdateUsage_ZeroTokens_SetsDirtyAndLastUsed(t *testing.T) {
 
 	// Since UpdateUsage saves immediately, dirty should be false after successful save.
 	// The important thing is that last_used was updated and data persisted.
-	if ks.dirty {
+	if ks.IsDirty() {
 		t.Fatal("expected dirty flag to be false after UpdateUsage saved successfully")
 	}
 }
@@ -208,24 +208,20 @@ func TestKeyStore_CloseFlushesDirtyData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Add usage then immediately close (don't wait for 30s ticker)
+	// Add usage then immediately close
 	ks.UpdateUsage("pk_flush", 1234, 0)
 	ks.Close()
 
-	// Read file directly from disk
-	raw, err := os.ReadFile(f)
+	// Re-open and verify data persisted (SQLite writes immediately, Close just closes DB)
+	ks2, err := NewKeyStore(f)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ks2.Close()
 
-	var diskData ApiKeysData
-	json.Unmarshal(raw, &diskData)
-
-	if len(diskData.Keys) != 1 {
-		t.Fatalf("expected 1 key on disk, got %d", len(diskData.Keys))
-	}
-	if diskData.Keys[0].TotalLifetimeTokens != 1234 {
-		t.Fatalf("expected 1234 tokens on disk after Close, got %d", diskData.Keys[0].TotalLifetimeTokens)
+	key, _ := ks2.FindKey("pk_flush")
+	if key.TotalLifetimeTokens != 1234 {
+		t.Fatalf("expected 1234 tokens after re-open, got %d", key.TotalLifetimeTokens)
 	}
 }
 
@@ -488,28 +484,24 @@ func TestKeyStore_UpdateUsage_DiskPersistenceRFC3339(t *testing.T) {
 	}
 
 	ks.UpdateUsage("pk_persist", 777, 0)
-	ks.Close() // force flush to disk
+	ks.Close()
 
-	// Read raw file and verify format
-	raw, err := os.ReadFile(f)
+	// Re-open and verify data persisted correctly
+	ks2, err := NewKeyStore(f)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ks2.Close()
 
-	var diskData ApiKeysData
-	if err := json.Unmarshal(raw, &diskData); err != nil {
-		t.Fatal(err)
-	}
+	key, _ := ks2.FindKey("pk_persist")
 
-	key := diskData.Keys[0]
-
-	// Verify WindowStart on disk is RFC3339 parseable
+	// Verify WindowStart is RFC3339 parseable
 	_, err = time.Parse(time.RFC3339, key.UsageWindows[0].WindowStart)
 	if err != nil {
 		t.Fatalf("disk WindowStart %q not RFC3339: %v", key.UsageWindows[0].WindowStart, err)
 	}
 
-	// Verify LastUsed on disk is RFC3339 parseable
+	// Verify LastUsed is RFC3339 parseable
 	_, err = time.Parse(time.RFC3339, key.LastUsed)
 	if err != nil {
 		t.Fatalf("disk LastUsed %q not RFC3339: %v", key.LastUsed, err)

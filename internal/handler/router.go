@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -30,7 +31,7 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 	r.Get("/", Index)
 	r.Get("/health", Health)
 
-	// Protected routes
+	// Protected routes (proxy users)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(store))
 		r.Use(middleware.RateLimit())
@@ -47,5 +48,48 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 		})
 	})
 
+	// Admin routes (gated by master API key from env)
+	admin := NewAdminHandler(store.DB())
+	r.Route("/admin", func(r chi.Router) {
+		r.Use(adminAuth(cfg.AdminAPIKey))
+
+		r.Get("/stats", admin.GlobalStats)
+		r.Route("/keys", func(r chi.Router) {
+			r.Get("/", admin.ListKeys)
+			r.Post("/", admin.CreateKey)
+			r.Get("/{id}", admin.GetKey)
+			r.Put("/{id}", admin.UpdateKey)
+			r.Delete("/{id}", admin.DeleteKey)
+			r.Post("/{id}/regenerate", admin.RegenerateKey)
+		})
+	})
+
 	return r
+}
+
+// adminAuth middleware validates the master admin API key from env.
+func adminAuth(masterKey string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if masterKey == "" {
+				writeAdminError(w, http.StatusForbidden, "admin API not configured (ADMIN_API_KEY not set)")
+				return
+			}
+
+			key := ""
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				key = strings.TrimPrefix(auth, "Bearer ")
+				key = strings.TrimSpace(key)
+			} else if k := r.Header.Get("x-api-key"); k != "" {
+				key = k
+			}
+
+			if key == "" || key != masterKey {
+				writeAdminError(w, http.StatusUnauthorized, "invalid admin API key")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }

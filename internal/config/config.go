@@ -10,6 +10,7 @@ type Config struct {
 	Port           string
 	DataFile       string
 	ZaiApiKey      string
+	AdminAPIKey    string
 	DefaultModel   string
 	AllowedModels  []string
 	FlushInterval  time.Duration
@@ -20,6 +21,7 @@ func Load() *Config {
 		Port:           getEnv("PORT", "3000"),
 		DataFile:       getEnv("DATA_FILE", "data/apikeys.json"),
 		ZaiApiKey:      os.Getenv("ZAI_API_KEY"),
+		AdminAPIKey:    os.Getenv("ADMIN_API_KEY"),
 		DefaultModel:   getEnv("DEFAULT_MODEL", "glm-4.7"),
 		AllowedModels:  parseAllowedModels(os.Getenv("ALLOWED_MODELS")),
 		FlushInterval:  30 * time.Second,
