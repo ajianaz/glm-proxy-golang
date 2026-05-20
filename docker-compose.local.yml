@@ -11,7 +11,9 @@ services:
     environment:
       - PORT=${PORT:-3000}
       - ZAI_API_KEY=${ZAI_API_KEY}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-glm-4.7}
+      - ALLOWED_MODELS=${ALLOWED_MODELS:-}
       - DATA_FILE=/app/data/apikeys.json
     volumes:
       - ./data:/app/data:rw

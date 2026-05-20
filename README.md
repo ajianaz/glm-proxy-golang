@@ -1,14 +1,23 @@
 # GLM Proxy (Go)
 
-Go rewrite of the GLM Proxy API Gateway. Proxies requests to Z.AI (glm-4.7) with rate limiting, multi-user token management, and **true SSE streaming**.
+Go rewrite of the GLM Proxy API Gateway. Proxies requests to Z.AI (GLM models) with rate limiting, multi-user key management, **Admin API**, and **true SSE streaming**.
+
+## Storage: SQLite
+
+Since v0.2.0, storage uses **SQLite** (via [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure Go, zero CGO):
+
+- **WAL mode** — concurrent read safety without blocking
+- **Auto-migration** — existing `apikeys.json` auto-detected and imported on first boot
+- **Zero downtime** — no manual migration steps, JSON → SQLite happens transparently
 
 | | TypeScript (Bun) | Go |
 |---|---|---|
-| Docker image | ~300MB | **~7MB** |
+| Docker image | ~300MB | **~15MB** |
 | Runtime RAM | ~200MB+ | **15-30MB** |
 | SSE streaming | Broken (buffers full response) | **True chunked streaming** |
 | Token tracking | Broken for streaming | **Works in streaming** |
-| Storage | Reads file every request | **In-memory cache + periodic flush** |
+| Storage | JSON file, read-every-request | **SQLite WAL, concurrent-safe** |
+| Key management | Edit JSON manually | **Admin CRUD API** |
 
 ## Quick Start
 
@@ -20,69 +29,27 @@ Go rewrite of the GLM Proxy API Gateway. Proxies requests to Z.AI (glm-4.7) with
 ### Step 1: Setup Environment
 
 ```bash
-# Copy env template
 cp .env.example .env
 ```
 
 Buka `.env` dan isi:
 
 ```env
-# WAJIB: Master API key dari Z.AI (untuk semua user yang TANPA glmkey)
-ZAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+# WAJIB: Master API key dari Z.AI
+ZAI_API_KEY=sk-your-zai-key
 
-# Opsional: Default model jika per-key model kosong
+# WAJIB: Admin API key (generate: openssl rand -hex 32)
+ADMIN_API_KEY=your-random-secret
+
+# Opsional
 DEFAULT_MODEL=glm-4.7
-
-# Opsional: Port server
 PORT=3000
-
-# Opsional: Path ke file API keys (di dalam container)
-DATA_FILE=/app/data/apikeys.json
 ```
 
-### Step 2: Buat API Keys
+### Step 2: Jalankan
 
 ```bash
 mkdir -p data
-```
-
-Buat `data/apikeys.json`:
-
-```json
-{
-  "keys": [
-    {
-      "key": "pk_ajianaz",
-      "name": "Ajianaz",
-      "model": "glm-4.7",
-      "token_limit_per_5h": 100000,
-      "expiry_date": "2027-12-31T23:59:59Z",
-      "created_at": "2026-03-17T00:00:00Z",
-      "last_used": "2026-03-17T00:00:00Z",
-      "total_lifetime_tokens": 0,
-      "usage_windows": []
-    },
-    {
-      "key": "pk_premium_user",
-      "name": "Premium User",
-      "model": "glm-4.7",
-      "glmkey": "sk-premium-user-own-zai-key",
-      "token_limit_per_5h": 500000,
-      "expiry_date": "2027-06-30T23:59:59Z",
-      "created_at": "2026-03-17T00:00:00Z",
-      "last_used": "2026-03-17T00:00:00Z",
-      "total_lifetime_tokens": 0,
-      "usage_windows": []
-    }
-  ]
-}
-```
-
-> **Catatan**: `glmkey` opsional. Jika diisi, user itu pakai key sendiri ke Z.AI (bukan master key dari `.env`).
-
-### Step 3: Jalankan
-
-```bash
 docker compose up -d
 
 # Verify
@@ -90,56 +57,222 @@ curl http://localhost:3000/health
 # {"status":"ok","timestamp":"..."}
 ```
 
-### Step 4: Test
+### Step 3: Buat API Key via Admin API
 
 ```bash
-# Cek quota
-curl -H "Authorization: Bearer pk_ajianaz" http://localhost:3000/stats
-
-# Chat completion
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer pk_ajianaz" \
+# Buat key baru
+curl -X POST http://localhost:3000/admin/keys \
+  -H "Authorization: Bearer your-random-secret" \
   -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Halo!"}]}'
+  -d '{
+    "name": "User 1",
+    "token_limit_per_5h": 100000,
+    "expiry_date": "2099-12-31T23:59:59Z"
+  }'
+# Response: {"id":1,"key":"pk_a1b2c3...","name":"User 1",...}
 ```
 
-### Struktur File yang Dibutuhkan
-
-```
-glm-proxy-golang/
-  .env                    # ZAI_API_KEY, DEFAULT_MODEL, PORT
-  data/
-    apikeys.json          # Daftar API key user (volume mount ke /app/data)
-  docker-compose.yml      # Konfigurasi container (sudah ada)
-  Dockerfile              # Build image (sudah ada)
-```
+> **Simpan key-nya!** Full key hanya ditampilkan sekali saat creation.
 
 ### Local Development (tanpa Docker)
 
 ```bash
 # Build
-go build -o bin/server ./cmd/server
+CGO_ENABLED=0 go build -o bin/server ./cmd/server
 
-# Jalankan (butuh data/apikeys.json)
-ZAI_API_KEY=sk-xxxxxx ./bin/server
+# Jalankan
+ZAI_API_KEY=sk-xxx ADMIN_API_KEY=secret ./bin/server
 
 # Run tests
-go test ./... -v -race
+CGO_ENABLED=0 go test ./... -v -race
 ```
 
+## File Structure
+
+```
+glm-proxy-golang/
+  .env.example                  # Konfigurasi env (copy → .env)
+  docker-compose.yml            # Dev: build lokal + Traefik
+  docker-compose.prod.yml       # Prod: pull image + Traefik
+  docker-compose.local.yml      # Local: tanpa domain/Traefik
+  data/                         # Volume mount ke /app/data
+    apikeys.json                # Legacy (jika ada, auto-migrate → .migrated)
+    apikeys.db                  # SQLite database (auto-created)
+    apikeys.db-wal              # SQLite WAL file (auto-created)
+    apikeys.db-shm              # SQLite shared memory (auto-created)
+  Dockerfile                    # Multi-stage: golang:1.25-alpine → scratch
+```
+
+### Docker Volume
+
+Volume `./data:/app/data:rw` sudah mencakup semua file yang dibutuhkan:
+
+| File | Auto-created? | Description |
+|------|---------------|-------------|
+| `apikeys.db` | ✅ | SQLite database (main) |
+| `apikeys.db-wal` | ✅ | WAL journal (concurrent read safety) |
+| `apikeys.db-shm` | ✅ | Shared memory index |
+| `apikeys.json.migrated` | ✅ | Backup JSON setelah migrasi |
+
 ## Endpoints
+
+### Public
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/` | No | API info |
 | GET | `/health` | No | Health check |
-| GET | `/stats` | Yes | Token usage stats |
-| POST | `/v1/messages` | Yes | Anthropic-compatible (goes to BigModel) |
-| ALL | `/v1/*` | Yes | OpenAI-compatible (goes to Z.AI, strips `/v1`) |
+
+### Proxy (User-facing)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/stats` | Yes | Token usage stats per key |
+| POST | `/v1/messages` | Yes | Anthropic-compatible |
+| ALL | `/v1/*` | Yes | OpenAI-compatible |
+
+### Admin API (`/admin/*`)
+
+All admin endpoints require `ADMIN_API_KEY` via `Authorization: Bearer` or `x-api-key` header.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/admin/stats` | Global stats (total keys, active, tokens) |
+| GET | `/admin/keys` | List all API keys (keys masked) |
+| POST | `/admin/keys` | Create new API key |
+| GET | `/admin/keys/{id}` | Get single key detail |
+| PUT | `/admin/keys/{id}` | Update key fields |
+| DELETE | `/admin/keys/{id}` | Delete key + cascade windows |
+| POST | `/admin/keys/{id}/regenerate` | Regenerate key value |
+
+## Admin API Reference
+
+### Authentication
+
+```bash
+# Option 1: Bearer token
+Authorization: Bearer your-admin-secret
+
+# Option 2: x-api-key header
+x-api-key: your-admin-secret
+```
+
+If `ADMIN_API_KEY` env is not set, all `/admin/*` endpoints return **403**.
+
+### GET /admin/stats
+
+Global dashboard stats.
+
+```bash
+curl http://localhost:3000/admin/stats \
+  -H "Authorization: Bearer your-admin-secret"
+```
+
+```json
+{
+  "total_keys": 5,
+  "active_keys": 4,
+  "total_requests": 1234,
+  "total_lifetime_tokens": 567890
+}
+```
+
+### POST /admin/keys
+
+Create a new API key. Full key returned **only once**.
+
+```bash
+curl -X POST http://localhost:3000/admin/keys \
+  -H "Authorization: Bearer your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "New User",
+    "model": "glm-4.7",
+    "glm_key": "sk-user-own-key",
+    "token_limit_per_5h": 500000,
+    "expiry_date": "2099-12-31T23:59:59Z"
+  }'
+```
+
+**Request fields:**
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | ✅ | — | Display name |
+| `model` | — | (from env) | Model override for this key |
+| `glm_key` | — | — | Per-key upstream Z.AI key (bypasses master key) |
+| `token_limit_per_5h` | — | `500000` | Token quota per rolling 5h window |
+| `expiry_date` | ✅ | — | RFC3339 expiry date |
+
+**Response (201):**
+
+```json
+{
+  "id": 1,
+  "key": "pk_a1b2c3d4e5f6...",
+  "name": "New User",
+  "model": "glm-4.7",
+  "token_limit_per_5h": 500000,
+  "expiry_date": "2099-12-31T23:59:59Z",
+  "created_at": "2026-05-20T16:00:00Z"
+}
+```
+
+### GET /admin/keys
+
+List all keys. Key values are masked (`pk_a1...c3d`).
+
+```bash
+curl http://localhost:3000/admin/keys \
+  -H "Authorization: Bearer your-admin-secret"
+```
+
+### GET /admin/keys/{id}
+
+Get single key detail with usage windows.
+
+```bash
+curl http://localhost:3000/admin/keys/1 \
+  -H "Authorization: Bearer your-admin-secret"
+```
+
+### PUT /admin/keys/{id}
+
+Update specific fields (partial update). Only provided fields are changed.
+
+```bash
+curl -X PUT http://localhost:3000/admin/keys/1 \
+  -H "Authorization: Bearer your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Updated Name", "token_limit_per_5h": 200000}'
+```
+
+### DELETE /admin/keys/{id}
+
+Delete key and all associated usage windows (cascade).
+
+```bash
+curl -X DELETE http://localhost:3000/admin/keys/1 \
+  -H "Authorization: Bearer your-admin-secret"
+# 204 No Content
+```
+
+### POST /admin/keys/{id}/regenerate
+
+Generate new key value for existing key. Old key immediately invalidated.
+
+```bash
+curl -X POST http://localhost:3000/admin/keys/1/regenerate \
+  -H "Authorization: Bearer your-admin-secret"
+```
+
+```json
+{"key": "pk_new_random_hex_48_chars"}
+```
 
 ## Authentication
 
-Two methods:
+Two methods for proxy endpoints:
 
 ```bash
 # Option 1: Bearer token
@@ -155,13 +288,13 @@ x-api-key: pk_your_key
 
 ```bash
 curl http://localhost:3000/health
-# {"status":"ok","timestamp":"2026-03-17T00:00:00Z"}
+# {"status":"ok","timestamp":"2026-05-20T16:00:00Z"}
 ```
 
 ### Check Quota
 
 ```bash
-curl -H "Authorization: Bearer pk_test_user" http://localhost:3000/stats
+curl -H "Authorization: Bearer pk_your_key" http://localhost:3000/stats
 ```
 
 ### OpenAI-Compatible (Non-Streaming)
@@ -241,104 +374,91 @@ const msg = await anthropic.messages.create({
 console.log(msg.content);
 ```
 
-## API Key Management
+## Key Management
 
-Keys stored in `data/apikeys.json`. Edit the file and the proxy picks up changes automatically.
+### Via Admin API (Recommended)
 
-### Key Structure
+All CRUD operations through `/admin/keys` endpoints. No manual file editing needed.
 
-```json
-{
-  "keys": [{
-    "key": "pk_user_12345",
-    "name": "User Full Name",
-    "model": "glm-4.7",
-    "glmkey": "user_specific_zai_key",
-    "token_limit_per_5h": 100000,
-    "expiry_date": "2027-12-31T23:59:59Z",
-    "created_at": "2026-01-01T00:00:00Z",
-    "last_used": "2026-01-01T00:00:00Z",
-    "total_lifetime_tokens": 0,
-    "usage_windows": []
-  }]
-}
-```
+### Via JSON (Legacy / Migration)
 
-### Fields
+Existing `apikeys.json` auto-migrates to SQLite on first boot:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `key` | Yes | Unique key (format: `pk_*`) |
-| `name` | Yes | Display name |
-| `model` | No | Model override for this key (falls back to `DEFAULT_MODEL`, then `glm-4.7`) |
-| `glmkey` | No | **New**: Per-user upstream Z.AI key. Bypasses the master `ZAI_API_KEY` |
-| `token_limit_per_5h` | Yes | Token quota per rolling 5-hour window |
-| `expiry_date` | Yes | ISO 8601 expiry date |
-| `created_at` | Yes | ISO 8601 creation time |
-| `last_used` | Auto | Auto-updated on each request |
-| `total_lifetime_tokens` | Auto | Cumulative token count |
-| `usage_windows` | Auto | Internal tracking (auto-managed, auto-cleaned) |
-
-### `glmkey` Feature
-
-Each user can have their own upstream Z.AI API key:
+1. Server starts, detects `apikeys.json` exists
+2. Imports all keys + usage windows into SQLite
+3. Renames `apikeys.json` → `apikeys.json.migrated` (backup preserved)
+4. Subsequent boots use SQLite only
 
 ```json
 {
-  "key": "pk_premium_user",
-  "name": "Premium User",
-  "glmkey": "user_premium_zai_key",
-  "token_limit_per_5h": 500000,
-  "expiry_date": "2027-12-31T23:59:59Z",
-  "created_at": "2026-01-01T00:00:00Z",
-  "last_used": "2026-01-01T00:00:00Z",
-  "total_lifetime_tokens": 0,
-  "usage_windows": []
+  "keys": [
+    {
+      "key": "pk_legacy_user",
+      "name": "Legacy User",
+      "model": "glm-4.7",
+      "glmkey": "",
+      "token_limit_per_5h": 100000,
+      "expiry_date": "2099-12-31T23:59:59Z",
+      "created_at": "2026-03-17T00:00:00Z",
+      "last_used": "",
+      "total_lifetime_tokens": 0,
+      "usage_windows": []
+    }
+  ]
 }
 ```
 
-Priority: `user's glmkey` > master `ZAI_API_KEY` env var.
+### Key Fields
+
+| Field | Description |
+|-------|-------------|
+| `key` | Unique API key (`pk_` + 48 hex chars, auto-generated) |
+| `name` | Display name |
+| `model` | Model override (falls back to `DEFAULT_MODEL` → `glm-4.7`) |
+| `glm_key` | Per-key upstream Z.AI key (bypasses master `ZAI_API_KEY`) |
+| `token_limit_per_5h` | Token quota per rolling 5-hour window |
+| `expiry_date` | RFC3339 expiry date |
+| `created_at` | Auto-set on creation (RFC3339) |
+| `last_used` | Auto-updated on each request |
+| `total_requests` | Cumulative request count |
+| `total_lifetime_tokens` | Cumulative token count |
+
+### Upstream Key Priority
+
+```
+User request
+    │
+    ├─ Key has glm_key? ──Yes──→ use key's glm_key
+    │
+    └─ No glm_key ────────────→ use ZAI_API_KEY from env
+```
 
 ## Environment Variables
 
-Semua variabel di-set via file `.env` (Docker) atau export di shell (local).
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `ZAI_API_KEY` | — | **Yes** | Master upstream API key from Z.AI |
+| `ADMIN_API_KEY` | — | **Yes** (for Admin API) | Secret key for `/admin/*` endpoints |
+| `DEFAULT_MODEL` | `glm-4.7` | No | Fallback model if per-key model is empty |
+| `ALLOWED_MODELS` | (all) | No | Comma-separated model allowlist |
+| `PORT` | `3000` | No | Server port |
+| `DATA_FILE` | `data/apikeys.json` | No | Data file path (SQLite DB auto-created alongside) |
 
-| Variable | Default | Wajib? | Description |
-|----------|---------|--------|-------------|
-| `ZAI_API_KEY` | (none) | **Ya** | Master API key dari Z.AI. Digunakan untuk upstream auth semua user yang **tidak punya** `glmkey` |
-| `DEFAULT_MODEL` | `glm-4.7` | Tidak | Model default jika user tidak punya `model` di apikeys.json |
-| `PORT` | `3000` | Tidak | Port server |
-| `DATA_FILE` | `data/apikeys.json` | Tidak | Path ke file API keys. Di Docker gunakan `/app/data/apikeys.json` |
+### Where to get ZAI_API_KEY
 
-### Dari Mana Dapat ZAI_API_KEY?
-
-1. Buka [Z.AI Open Platform](https://open.bigmodel.cn/)
+1. Open [Z.AI Open Platform](https://open.bigmodel.cn/)
 2. Login / register
-3. Ke halaman **API Keys** / **Console**
+3. Go to **API Keys** / **Console**
 4. Create new key
-5. Copy key-nya (format: `sk-xxxx...`)
-
-### Hubungan `ZAI_API_KEY` vs `glmkey`
-
-```
-User request masuk
-    |
-    v
-User punya glmkey di apikeys.json?
-    |
-    +-- Ya --> pakai glmkey user untuk upstream auth
-    |
-    +-- Tidak --> pakai ZAI_API_KEY dari .env
-```
+5. Copy key (format: `sk-xxxx...`)
 
 ## Rate Limiting
 
 - **Type**: Rolling 5-hour window
 - **Metric**: Total tokens across all active windows
-- **Threshold**: `>` token_limit_per_5h (exactly at limit is still allowed)
-- **Response**: HTTP 429 with `Retry-After` header (seconds until window expires)
+- **Threshold**: `>` token_limit_per_5h (exactly at limit = still allowed)
+- **Response**: HTTP 429 with `Retry-After` header
 
-When rate limited:
 ```json
 {
   "error": {
@@ -357,39 +477,43 @@ When rate limited:
 glm-proxy-golang/
   cmd/server/main.go              # Entry point, graceful shutdown
   internal/
-    config/config.go              # Env parsing
+    config/config.go              # Env parsing (ZAI_API_KEY, ADMIN_API_KEY, etc.)
     storage/
-      types.go                    # ApiKey, RateLimitInfo, StatsResponse
-      keystore.go                 # In-memory cache + sync.RWMutex + periodic flush
-    ratelimit/ratelimit.go        # Rolling 5h window
+      types.go                    # ApiKey, UsageWindow, RateLimitInfo, StatsResponse
+      sqlite.go                   # SQLite KeyStore (WAL, JSON migration, CRUD)
+    ratelimit/ratelimit.go        # Rolling 5h window rate limiter
     proxy/
       types.go                    # Model resolution, header forwarding
-      openai.go                   # Proxy to api.z.ai (strip /v1, Bearer auth)
-      anthropic.go                # Proxy to open.bigmodel.cn (path as-is, x-api-key)
-      sse.go                      # True chunked SSE streaming + inline token parse
+      openai.go                   # Proxy to api.z.ai (OpenAI-compatible)
+      anthropic.go                # Proxy to open.bigmodel.cn (Anthropic-compatible)
+      sse.go                      # True chunked SSE streaming + token extraction
       relay.go                    # Non-streaming response relay
     middleware/
       context.go                  # Context key helpers
       auth.go                     # Auth (Bearer/x-api-key)
       ratelimit.go                # 429 middleware
     handler/
-      router.go                   # Chi router + CORS
+      router.go                   # Chi router + CORS + admin auth middleware
       health.go                   # GET /health, GET /
-      stats.go                    # GET /stats
+      stats.go                    # GET /stats (per-key)
+      admin.go                    # /admin/* CRUD (keys, stats, regenerate)
       openai.go                   # /v1/* handler
       anthropic.go                # /v1/messages handler
-  Dockerfile                      # Multi-stage: golang:1.25-alpine -> scratch
-  docker-compose.yml              # Traefik labels, 128M limit, security hardening
+  Dockerfile                      # Multi-stage: golang:1.25-alpine → scratch
+  docker-compose.yml              # Dev: build lokal + Traefik labels
+  docker-compose.prod.yml         # Prod: pull from GHCR + Traefik labels
+  docker-compose.local.yml        # Local: tanpa domain/Traefik
 ```
 
 ## Docker
 
 ```bash
-# Build
-docker build -t glm-proxy-go .
+# Build (dev)
+docker compose up --build -d
 
-# Run
-docker compose up -d
+# Pull (prod)
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 
 # View logs
 docker compose logs -f
@@ -398,13 +522,13 @@ docker compose logs -f
 docker compose down
 ```
 
-### Security Hardening (docker-compose.yml)
+### Security Hardening
 
-- `read_only: true` - Read-only filesystem
-- `cap_drop: ALL` - Drop all Linux capabilities
-- `no-new-privileges` - Prevent privilege escalation
+- `read_only: true` — Read-only filesystem
+- `cap_drop: ALL` — Drop all Linux capabilities
+- `no-new-privileges` — Prevent privilege escalation
 - `memory: 128M` limit / `32M` reservation
-- `scratch` base image - No shell, no package manager, minimal attack surface
+- `scratch` base image — No shell, no package manager, minimal attack surface
 
 ### Traefik Integration
 
@@ -415,7 +539,16 @@ DOMAIN=glm.ajianaz.dev
 PORT=3000
 ```
 
-Traefik labels di `docker-compose.yml` sudah otomatis membaca `DOMAIN` dan `PORT` dari env.
+Traefik labels di `docker-compose.yml` otomatis membaca `DOMAIN` dan `PORT`.
+
+### Volume Mount
+
+```yaml
+volumes:
+  - ./data:/app/data:rw
+```
+
+Folder `./data` di-host di-mount ke `/app/data` di container. Semua file database (`.db`, `.db-wal`, `.db-shm`) dan legacy JSON (`.migrated`) ada di sini.
 
 ## CI/CD (GitHub Actions)
 
@@ -425,18 +558,11 @@ Push ke `main` otomatis build dan push Docker image ke GitHub Container Registry
 
 Di repo GitHub: **Settings > Secrets and variables > Actions > New repository secret**
 
-| Secret | Value | Contoh |
-|--------|-------|--------|
-| `DOCKER_BASEURL` | Registry URL | `ghcr.io` |
-| `DOCKER_USERNAME` | GitHub username / org | `ajianaz` |
-| `DOCKER_PASSWORD` | GitHub PAT (classic, scope: `write:packages`) | `ghp_xxxxxxxxxxxx` |
-
-### Cara Buat PAT untuk GHCR
-
-1. GitHub > Settings > Developer settings > **Personal access tokens** > Tokens (classic)
-2. **Generate new token (classic)**
-3. Scopes: centang `write:packages` dan `read:packages`
-4. Copy token-nya, paste ke secret `DOCKER_PASSWORD`
+| Secret | Value |
+|--------|-------|
+| `DOCKER_BASEURL` | `ghcr.io` |
+| `DOCKER_USERNAME` | GitHub username |
+| `DOCKER_PASSWORD` | GitHub PAT (classic, scope: `write:packages`) |
 
 ### Tagging
 
@@ -446,121 +572,47 @@ Di repo GitHub: **Settings > Secrets and variables > Actions > New repository se
 | Tag `v1.0.0` | `1.0.0`, `1.0`, `latest` |
 | Pull request | Build only, no push |
 
-### Pull Image di Server
+## Deploy ke Server (Minimal Files)
+
+Server hanya butuh **3 file**, tidak butuh source code:
+
+```
+~/serviceku/glm-proxy-golang/
+  .env                    # ZAI_API_KEY, ADMIN_API_KEY, DOMAIN
+  docker-compose.prod.yml # pull image dari GHCR
+  data/                   # auto-created on first run
+```
+
+### First Deploy
 
 ```bash
-# Login ke GHCR
-echo $GITHUB_PAT | docker login ghcr.io -u ajianaz --password-stdin
-
-# Pull image
-docker pull ghcr.io/ajianaz/glm-proxy-go:main
-```
-
-## Deploy ke Server (Private Repo)
-
-Repo private tidak bisa di-clone sembarangan. Server hanya butuh **3 file**, tidak butuh source code.
-
-### File yang Perlu Ada di Server
-
-```
-~/serviceku/glm-proxy-golang/           # atau folder mana saja
-  .env                    # konfigurasi
-  docker-compose.prod.yml # pakai image, bukan build
-  deploy.sh               # script deploy (opsional)
-  data/
-    apikeys.json          # API keys
-```
-
-### Langkah Deploy (Pertama Kali)
-
-```bash
-# 1. SSH ke server
 ssh user@your-server
-
-# 2. Buat folder
 mkdir -p ~/serviceku/glm-proxy-golang/data
 
-# 3. Login ke GHCR (sekali saja, credential tersimpan)
-echo "ghp_xxxxxxxxxxxx" | docker login ghcr.io -u ajianaz --password-stdin
+# Login GHCR (once)
+echo "$GITHUB_PAT" | docker login ghcr.io -u ajianaz --password-stdin
 
-# 4. Buat .env
+# .env
 cat > ~/serviceku/glm-proxy-golang/.env << 'EOF'
-ZAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+ZAI_API_KEY=sk-xxx
+ADMIN_API_KEY=$(openssl rand -hex 32)
 DEFAULT_MODEL=glm-4.7
 PORT=3000
-DATA_FILE=/app/data/apikeys.json
 DOMAIN=glm.ajianaz.dev
 DOCKER_IMAGE=ghcr.io/ajianaz/glm-proxy-go:main
 EOF
 
-# 5. Buat apikeys.json
-cat > ~/serviceku/glm-proxy-golang/data/apikeys.json << 'EOF'
-{
-  "keys": [{
-    "key": "pk_your_key",
-    "name": "Your Name",
-    "token_limit_per_5h": 100000,
-    "expiry_date": "2027-12-31T23:59:59Z",
-    "created_at": "2026-03-17T00:00:00Z",
-    "last_used": "2026-03-17T00:00:00Z",
-    "total_lifetime_tokens": 0,
-    "usage_windows": []
-  }]
-}
-EOF
-
-# 6. Upload docker-compose.prod.yml (dari lokal)
-scp docker-compose.prod.yml user@your-server:~/serviceku/glm-proxy-golang/
-
-# 7. Pull & start
+# Start
 cd ~/serviceku/glm-proxy-golang
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-### Update Deploy (Setelah Push Baru ke Main)
+### Update
 
 ```bash
-# Opsi A: manual
-cd ~/serviceku/glm-proxy-golang
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
-
-# Opsi B: pakai deploy.sh
-./deploy.sh
 ```
-
-### Perbedaan docker-compose.yml vs docker-compose.prod.yml
-
-| | `docker-compose.yml` | `docker-compose.prod.yml` |
-|---|---|---|
-| Image | `build: .` (build lokal) | `image: ghcr.io/...` (pull) |
-| Butuh source code? | Ya | Tidak |
-| Pakai di | Local dev | Server produksi |
-
-### Jika Ingin Auto-Deploy dari GitHub
-
-Tambahkan step di `.github/workflows/docker-publish.yml` setelah build & push:
-
-```yaml
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd ~/serviceku/glm-proxy-golang
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
-```
-
-Secrets yang perlu ditambahkan:
-
-| Secret | Contoh |
-|--------|--------|
-| `SERVER_HOST` | `192.168.1.100` atau `your.server.com` |
-| `SERVER_USER` | `root` atau `deploy` |
-| `SERVER_SSH_KEY` | Private key SSH server (isi lengkap) |
 
 ## Available Models
 
@@ -577,7 +629,8 @@ Secrets yang perlu ditambahkan:
 | 200 | Success |
 | 400 | Invalid request body |
 | 401 | Missing/invalid API key |
-| 403 | API key expired |
+| 403 | Key expired / Admin API not configured |
+| 404 | Key/resource not found |
 | 429 | Token quota exceeded |
 | 502 | Upstream (Z.AI) error |
 
@@ -590,11 +643,18 @@ docker compose logs -f
 # Rebuild
 docker compose up --build -d
 
-# Port conflict - change PORT in .env
+# Port conflict
 PORT=3001 docker compose up -d
 
-# Test upstream Z.AI key directly
-curl -H "Authorization: Bearer YOUR_ZAI_KEY" https://api.z.ai/api/coding/paas/v4/models
+# Test upstream Z.AI key
+curl -H "Authorization: Bearer sk-xxx" https://api.z.ai/api/coding/paas/v4/models
+
+# Admin API returns 403
+# → ADMIN_API_KEY env not set. Check .env file.
+
+# Database corrupted
+# → Delete data/apikeys.db* and restart (data loss if no backup).
+# → Or restore from data/apikeys.json.migrated backup.
 ```
 
 ## Makefile Commands
