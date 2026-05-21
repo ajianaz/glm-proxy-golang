@@ -7,8 +7,11 @@ import (
 	"glm-proxy/internal/storage"
 )
 
-// relayResponse forwards a non-streaming response, then tracks tokens synchronously.
+// relayResponse forwards a non-streaming response, then tracks tokens and cost synchronously.
 func relayResponse(w http.ResponseWriter, resp *http.Response, store *storage.KeyStore, keyValue string, tokenExtractor func([]byte) TokenResult) {
+	// Extract cost from upstream response headers (LiteLLM)
+	cost := parseCostFromHeader(resp.Header)
+
 	// Copy response headers
 	for k, vals := range resp.Header {
 		for _, v := range vals {
@@ -27,7 +30,7 @@ func relayResponse(w http.ResponseWriter, resp *http.Response, store *storage.Ke
 	w.WriteHeader(resp.StatusCode)
 	w.Write(bodyBytes)
 
-	// Track tokens synchronously to ensure no data loss on shutdown/restart.
+	// Track tokens and cost synchronously to ensure no data loss on shutdown/restart.
 	result := tokenExtractor(bodyBytes)
-	store.UpdateUsage(keyValue, result.Total, result.Cached)
+	store.UpdateUsage(keyValue, result.Total, result.Cached, cost)
 }

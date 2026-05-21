@@ -24,7 +24,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *storage.KeyStore) {
 			Key:             "pk_test_valid",
 			Name:            "Test Key",
 			Model:           "glm-4.7",
-			GlmKey:          "user_zai_key",
+			UpstreamKey:     "user_zai_key",
 			TokenLimitPer5h: 100000,
 			ExpiryDate:      "2099-01-01T00:00:00Z",
 			CreatedAt:       time.Now().Format(time.RFC3339),
@@ -53,7 +53,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *storage.KeyStore) {
 	cfg := &config.Config{
 		Port:         "0",
 		DataFile:     f,
-		ZaiApiKey:    "master_key",
+		MasterKey:    "master_key",
 		DefaultModel: "glm-4.7",
 	}
 

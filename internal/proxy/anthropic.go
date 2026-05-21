@@ -9,7 +9,7 @@ import (
 	"glm-proxy/internal/storage"
 )
 
-// AnthropicProxy proxies requests to the Anthropic-compatible BigModel endpoint.
+// AnthropicProxy proxies requests to the Anthropic-compatible upstream endpoint.
 type AnthropicProxy struct {
 	Config *config.Config
 	Store  *storage.KeyStore
@@ -18,10 +18,10 @@ type AnthropicProxy struct {
 // Proxy handles a single Anthropic-compatible proxy request.
 func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey) {
 	model := GetModelForKey(apiKey, p.Config.DefaultModel)
-	upstreamKey := apiKey.UpstreamKey(p.Config.ZaiApiKey)
+	upstreamKey := apiKey.GetUpstreamKey(p.Config.MasterKey)
 
 	// Anthropic uses path as-is (e.g., /v1/messages)
-	upstreamURL := AnthropicUpstream + r.URL.Path
+	upstreamURL := p.Config.AnthropicUpstream + r.URL.Path
 
 	// Read and inject model
 	body, err := readAndInjectModel(r.Body, r.URL.Path, r.Method, model)
@@ -64,7 +64,7 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	}
 	defer resp.Body.Close()
 
-	// Non-streaming: relay response and track tokens
+	// Non-streaming: relay response and track tokens + cost
 	relayResponse(w, resp, p.Store, apiKey.Key, extractAnthropicTokens)
 }
 
@@ -89,16 +89,19 @@ func extractAnthropicTokens(body []byte) TokenResult {
 	}
 }
 
-// streamSSE proxies an SSE stream with inline token counting.
+// streamSSE proxies an SSE stream with inline token counting and cost tracking.
 func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, keyValue string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(resp.StatusCode)
 
+	// Extract cost from upstream response headers (LiteLLM)
+	cost := parseCostFromHeader(resp.Header)
+
 	totalTokens := StreamSSE(w, resp.Body, "anthropic")
 	// resp.Body is closed by StreamSSE via defer
 
 	// Always update usage — records the request and any partial tokens collected
-	p.Store.UpdateUsage(keyValue, totalTokens.Total, totalTokens.Cached)
+	p.Store.UpdateUsage(keyValue, totalTokens.Total, totalTokens.Cached, cost)
 }
