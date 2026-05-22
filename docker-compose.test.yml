@@ -1,0 +1,32 @@
+# docker-compose.test.yml - quick test dari Docker Hub image
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   docker compose -f docker-compose.test.yml down -v   # cleanup data
+
+services:
+  glm-proxy:
+    image: ajianaz/glm-proxy-go:develop
+    container_name: glm-proxy-test
+    restart: "no"
+    ports:
+      - "${PORT:-3001}:${PORT:-3000}"
+    environment:
+      - PORT=3000
+      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY wajib di-set di .env}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:?ADMIN_API_KEY wajib di-set di .env}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-glm-4.7}
+      - ALLOWED_MODELS=${ALLOWED_MODELS:-}
+      - OPENAI_UPSTREAM=${OPENAI_UPSTREAM:-http://host.docker.internal:4000}
+      - ANTHROPIC_UPSTREAM=${ANTHROPIC_UPSTREAM:-http://host.docker.internal:4000}
+      - DATA_FILE=/app/data/apikeys.json
+    volumes:
+      - glm-test-data:/app/data:rw
+    healthcheck:
+      test: ["CMD", "/server", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  glm-test-data:
