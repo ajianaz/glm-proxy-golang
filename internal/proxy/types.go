@@ -4,14 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"glm-proxy/internal/storage"
-)
-
-var (
-	OpenAIUpstream    = "https://api.z.ai/api/coding/paas/v4"
-	AnthropicUpstream = "https://open.bigmodel.cn/api/anthropic"
 )
 
 // GetModelForKey resolves the model for a key: per-key > env default > hardcoded.
@@ -25,10 +21,11 @@ func GetModelForKey(key *storage.ApiKey, defaultModel string) string {
 	return "glm-4.7"
 }
 
-// TokenResult holds extracted token counts from an upstream response.
+// TokenResult holds extracted token counts and cost from an upstream response.
 type TokenResult struct {
-	Total   int
-	Cached  int
+	Total  int
+	Cached int
+	Cost   float64 // USD, parsed from x-litellm-response-cost header
 }
 
 // WriteError writes a JSON error response.
@@ -55,6 +52,27 @@ func forwardHeaders(dst, src http.Header, exclude ...string) {
 			}
 		}
 	}
+}
+
+// parseCostFromHeader extracts spend USD from x-litellm-response-cost header.
+// Returns 0 if header is missing or unparseable (graceful degradation).
+func parseCostFromHeader(h http.Header) float64 {
+	v := h.Get("x-litellm-response-cost")
+	if v == "" {
+		return 0
+	}
+	cost := 0.0
+	for _, c := range strings.Split(v, ",") {
+		c = strings.TrimSpace(c)
+		if n, err := parseFloat(c); err == nil {
+			cost += n
+		}
+	}
+	return cost
+}
+
+func parseFloat(s string) (float64, error) {
+	return strconv.ParseFloat(s, 64)
 }
 
 // readAndInjectModel reads the request body, injects the model field, and returns

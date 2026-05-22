@@ -13,7 +13,6 @@ import (
 
 	"glm-proxy/internal/config"
 	"glm-proxy/internal/handler"
-	"glm-proxy/internal/proxy"
 	"glm-proxy/internal/storage"
 )
 
@@ -44,6 +43,17 @@ func createKeyStore(t *testing.T, extraKeys ...storage.ApiKey) *storage.KeyStore
 	return store
 }
 
+func newTestConfig(upstreamURL string) *config.Config {
+	return &config.Config{
+		Port:            "0",
+		DataFile:        "",
+		MasterKey:       "master_key",
+		DefaultModel:    "glm-4.7",
+		OpenAIUpstream:  upstreamURL,
+		AnthropicUpstream: upstreamURL,
+	}
+}
+
 func TestOpenAIProxy_NonStreamingIntegration(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer master_key" {
@@ -51,27 +61,18 @@ func TestOpenAIProxy_NonStreamingIntegration(t *testing.T) {
 			return
 		}
 		resp := map[string]interface{}{
-			"id":      "chatcmpl-test",
-			"object":  "chat.completion",
+			"id":     "chatcmpl-test",
+			"object": "chat.completion",
 			"choices": []interface{}{map[string]interface{}{"message": map[string]interface{}{"content": "hello"}}},
-			"usage":   map[string]interface{}{"total_tokens": float64(50)},
+			"usage":  map[string]interface{}{"total_tokens": float64(50)},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	}))
 	defer upstream.Close()
 
-	origURL := proxy.OpenAIUpstream
-	proxy.OpenAIUpstream = upstream.URL
-	defer func() { proxy.OpenAIUpstream = origURL }()
-
 	store := createKeyStore(t)
-	cfg := &config.Config{
-		Port:         "0",
-		DataFile:     "",
-		ZaiApiKey:    "master_key",
-		DefaultModel: "glm-4.7",
-	}
+	cfg := newTestConfig(upstream.URL)
 
 	server := httptest.NewServer(handler.NewRouter(cfg, store))
 	defer server.Close()
@@ -116,17 +117,8 @@ func TestAnthropicProxy_NonStreamingIntegration(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	origURL := proxy.AnthropicUpstream
-	proxy.AnthropicUpstream = upstream.URL
-	defer func() { proxy.AnthropicUpstream = origURL }()
-
 	store := createKeyStore(t)
-	cfg := &config.Config{
-		Port:         "0",
-		DataFile:     "",
-		ZaiApiKey:    "master_key",
-		DefaultModel: "glm-4.7",
-	}
+	cfg := newTestConfig(upstream.URL)
 
 	server := httptest.NewServer(handler.NewRouter(cfg, store))
 	defer server.Close()
@@ -170,17 +162,8 @@ func TestModelInjection(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	origURL := proxy.OpenAIUpstream
-	proxy.OpenAIUpstream = upstream.URL
-	defer func() { proxy.OpenAIUpstream = origURL }()
-
 	store := createKeyStore(t)
-	cfg := &config.Config{
-		Port:         "0",
-		DataFile:     "",
-		ZaiApiKey:    "master_key",
-		DefaultModel: "glm-4.7",
-	}
+	cfg := newTestConfig(upstream.URL)
 
 	server := httptest.NewServer(handler.NewRouter(cfg, store))
 	defer server.Close()
@@ -207,7 +190,7 @@ func TestModelInjection(t *testing.T) {
 	}
 }
 
-func TestGlmKey_PerKey(t *testing.T) {
+func TestUpstreamKey_PerKey(t *testing.T) {
 	var receivedAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAuth = r.Header.Get("Authorization")
@@ -221,33 +204,24 @@ func TestGlmKey_PerKey(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	origURL := proxy.OpenAIUpstream
-	proxy.OpenAIUpstream = upstream.URL
-	defer func() { proxy.OpenAIUpstream = origURL }()
-
 	store := createKeyStore(t, storage.ApiKey{
-		Key:             "pk_glmkey_user",
-		Name:            "GlmKey User",
-		GlmKey:          "user_custom_zai_key",
+		Key:             "pk_upstream_user",
+		Name:            "Upstream User",
+		UpstreamKey:     "user_custom_zai_key",
 		TokenLimitPer5h: 100000,
 		ExpiryDate:      "2099-01-01T00:00:00Z",
 		CreatedAt:       time.Now().Format(time.RFC3339),
 		LastUsed:        time.Now().Format(time.RFC3339),
 		UsageWindows:    []storage.UsageWindow{},
 	})
-	cfg := &config.Config{
-		Port:         "0",
-		DataFile:     "",
-		ZaiApiKey:    "master_key",
-		DefaultModel: "glm-4.7",
-	}
+	cfg := newTestConfig(upstream.URL)
 
 	server := httptest.NewServer(handler.NewRouter(cfg, store))
 	defer server.Close()
 
 	body := `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}]}`
 	req, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer pk_glmkey_user")
+	req.Header.Set("Authorization", "Bearer pk_upstream_user")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -260,7 +234,7 @@ func TestGlmKey_PerKey(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// Should use per-key GlmKey, not master key
+	// Should use per-key upstream_key, not master key
 	if receivedAuth != "Bearer user_custom_zai_key" {
 		t.Fatalf("expected Bearer user_custom_zai_key, got %s", receivedAuth)
 	}

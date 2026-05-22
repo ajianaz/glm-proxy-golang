@@ -1,6 +1,6 @@
 # GLM Proxy (Go)
 
-Go rewrite of the GLM Proxy API Gateway. Proxies requests to Z.AI (GLM models) with rate limiting, multi-user key management, **Admin API**, and **true SSE streaming**.
+Go rewrite of the GLM Proxy API Gateway. Proxies requests to upstream LLM providers (Z.AI, OpenAI, Anthropic, etc.) via [LiteLLM](https://docs.litellm.ai/) with rate limiting, multi-user key management, **per-key upstream routing**, **cost tracking**, **Admin API**, and **true SSE streaming**.
 
 ## Storage: SQLite
 
@@ -8,6 +8,7 @@ Since v0.2.0, storage uses **SQLite** (via [`modernc.org/sqlite`](https://pkg.go
 
 - **WAL mode** — concurrent read safety without blocking
 - **Auto-migration** — existing `apikeys.json` auto-detected and imported on first boot
+- **V2 schema** — `upstream_key`, `total_spend_usd`, `spend_usd` columns added via safe ALTER TABLE
 - **Zero downtime** — no manual migration steps, JSON → SQLite happens transparently
 
 | | TypeScript (Bun) | Go |
@@ -18,13 +19,16 @@ Since v0.2.0, storage uses **SQLite** (via [`modernc.org/sqlite`](https://pkg.go
 | Token tracking | Broken for streaming | **Works in streaming** |
 | Storage | JSON file, read-every-request | **SQLite WAL, concurrent-safe** |
 | Key management | Edit JSON manually | **Admin CRUD API** |
+| Upstream | Hardcoded Z.AI | **Configurable (LiteLLM)** |
+| Cost tracking | ❌ | **✅ Per-key window + lifetime** |
 
 ## Quick Start
 
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) + Docker Compose
-- Z.AI API key (dari [Z.AI dashboard](https://open.bigmodel.cn/))
+- LiteLLM proxy running (or any OpenAI/Anthropic-compatible endpoint)
+- Upstream API key (LiteLLM virtual key, OpenAI, Z.AI, etc.)
 
 ### Step 1: Setup Environment
 
@@ -35,16 +39,22 @@ cp .env.example .env
 Buka `.env` dan isi:
 
 ```env
-# WAJIB: Master API key dari Z.AI
-ZAI_API_KEY=sk-your-zai-key
+# WAJIB: Master upstream API key (LiteLLM virtual key / provider key)
+MASTER_KEY=sk-litellm-***
 
 # WAJIB: Admin API key (generate: openssl rand -hex 32)
-ADMIN_API_KEY=your-random-secret
+ADMIN_API_KEY=your-r...cret
+
+# Upstream endpoints (default: LiteLLM proxy)
+OPENAI_UPSTREAM=http://litellm:4000
+ANTHROPIC_UPSTREAM=http://litellm:4000
 
 # Opsional
 DEFAULT_MODEL=glm-4.7
 PORT=3000
 ```
+
+> **Migration note:** `ZAI_API_KEY` still works (fallback). Rename to `MASTER_KEY` for clarity.
 
 ### Step 2: Jalankan
 
@@ -62,7 +72,7 @@ curl http://localhost:3000/health
 ```bash
 # Buat key baru
 curl -X POST http://localhost:3000/admin/keys \
-  -H "Authorization: Bearer your-random-secret" \
+  -H "Authorization: Bearer your-r...ret" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "User 1",
@@ -74,6 +84,23 @@ curl -X POST http://localhost:3000/admin/keys \
 
 > **Simpan key-nya!** Full key hanya ditampilkan sekali saat creation.
 
+### Per-Key Configuration
+
+Setiap API key bisa punya **upstream key sendiri** dan **default model sendiri**:
+
+```bash
+curl -X POST http://localhost:3000/admin/keys \
+  -H "Authorization: Bearer your-r...ret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Premium User",
+    "model": "claude-3-5-sonnet-20241022",
+    "upstream_key": "sk-user-litellm-key",
+    "token_limit_per_5h": 500000,
+    "expiry_date": "2099-12-31T23:59:59Z"
+  }'
+```
+
 ### Local Development (tanpa Docker)
 
 ```bash
@@ -81,7 +108,7 @@ curl -X POST http://localhost:3000/admin/keys \
 CGO_ENABLED=0 go build -o bin/server ./cmd/server
 
 # Jalankan
-ZAI_API_KEY=sk-xxx ADMIN_API_KEY=secret ./bin/server
+MASTER_KEY=sk-*** ADMIN_API_KEY=*** ./bin/server
 
 # Run tests
 CGO_ENABLED=0 go test ./... -v -race
@@ -127,7 +154,7 @@ Volume `./data:/app/data:rw` sudah mencakup semua file yang dibutuhkan:
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/stats` | Yes | Token usage stats per key |
+| GET | `/stats` | Yes | Token usage + cost stats per key |
 | POST | `/v1/messages` | Yes | Anthropic-compatible |
 | ALL | `/v1/*` | Yes | OpenAI-compatible |
 
@@ -137,7 +164,7 @@ All admin endpoints require `ADMIN_API_KEY` via `Authorization: Bearer` or `x-ap
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/admin/stats` | Global stats (total keys, active, tokens) |
+| GET | `/admin/stats` | Global stats (total keys, active, tokens, spend) |
 | GET | `/admin/keys` | List all API keys (keys masked) |
 | POST | `/admin/keys` | Create new API key |
 | GET | `/admin/keys/{id}` | Get single key detail |
@@ -151,7 +178,7 @@ All admin endpoints require `ADMIN_API_KEY` via `Authorization: Bearer` or `x-ap
 
 ```bash
 # Option 1: Bearer token
-Authorization: Bearer your-admin-secret
+Authorization: Bearer ***
 
 # Option 2: x-api-key header
 x-api-key: your-admin-secret
@@ -165,7 +192,7 @@ Global dashboard stats.
 
 ```bash
 curl http://localhost:3000/admin/stats \
-  -H "Authorization: Bearer your-admin-secret"
+  -H "Authorization: Bearer your-a...ret"
 ```
 
 ```json
@@ -173,7 +200,8 @@ curl http://localhost:3000/admin/stats \
   "total_keys": 5,
   "active_keys": 4,
   "total_requests": 1234,
-  "total_lifetime_tokens": 567890
+  "total_lifetime_tokens": 567890,
+  "total_spend_usd": 12.34
 }
 ```
 
@@ -183,12 +211,12 @@ Create a new API key. Full key returned **only once**.
 
 ```bash
 curl -X POST http://localhost:3000/admin/keys \
-  -H "Authorization: Bearer your-admin-secret" \
+  -H "Authorization: Bearer your-a...ret" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "New User",
     "model": "glm-4.7",
-    "glm_key": "sk-user-own-key",
+    "upstream_key": "sk-user-specific-key",
     "token_limit_per_5h": 500000,
     "expiry_date": "2099-12-31T23:59:59Z"
   }'
@@ -200,9 +228,11 @@ curl -X POST http://localhost:3000/admin/keys \
 |-------|----------|---------|-------------|
 | `name` | ✅ | — | Display name |
 | `model` | — | (from env) | Model override for this key |
-| `glm_key` | — | — | Per-key upstream Z.AI key (bypasses master key) |
+| `upstream_key` | — | — | Per-key upstream key (bypasses `MASTER_KEY`) |
 | `token_limit_per_5h` | — | `500000` | Token quota per rolling 5h window |
 | `expiry_date` | ✅ | — | RFC3339 expiry date |
+
+> **Backward compat:** JSON body juga menerima `glmkey` (legacy alias untuk `upstream_key`).
 
 **Response (201):**
 
@@ -212,28 +242,48 @@ curl -X POST http://localhost:3000/admin/keys \
   "key": "pk_a1b2c3d4e5f6...",
   "name": "New User",
   "model": "glm-4.7",
+  "upstream_key": "sk-user-specific-key",
   "token_limit_per_5h": 500000,
   "expiry_date": "2099-12-31T23:59:59Z",
+  "total_spend_usd": 0,
   "created_at": "2026-05-20T16:00:00Z"
 }
 ```
 
 ### GET /admin/keys
 
-List all keys. Key values are masked (`pk_a1...c3d`).
+List all keys. Key values are masked (`pk_a1...c3`).
 
 ```bash
 curl http://localhost:3000/admin/keys \
-  -H "Authorization: Bearer your-admin-secret"
+  -H "Authorization: Bearer your-a...ret"
 ```
 
 ### GET /admin/keys/{id}
 
-Get single key detail with usage windows.
+Get single key detail with usage windows and spend data.
 
 ```bash
 curl http://localhost:3000/admin/keys/1 \
-  -H "Authorization: Bearer your-admin-secret"
+  -H "Authorization: Bearer your-a...ret"
+```
+
+```json
+{
+  "id": 1,
+  "key": "pk_a1...c3d",
+  "name": "New User",
+  "model": "glm-4.7",
+  "total_lifetime_tokens": 567890,
+  "total_spend_usd": 12.34,
+  "current_usage": {
+    "tokens_used_in_current_window": 12345,
+    "remaining_tokens": 487655,
+    "window_spend_usd": 1.23,
+    "window_started_at": "2026-05-20T14:00:00Z",
+    "window_ends_at": "2026-05-20T19:00:00Z"
+  }
+}
 ```
 
 ### PUT /admin/keys/{id}
@@ -242,7 +292,7 @@ Update specific fields (partial update). Only provided fields are changed.
 
 ```bash
 curl -X PUT http://localhost:3000/admin/keys/1 \
-  -H "Authorization: Bearer your-admin-secret" \
+  -H "Authorization: Bearer your-a...ret" \
   -H "Content-Type: application/json" \
   -d '{"name": "Updated Name", "token_limit_per_5h": 200000}'
 ```
@@ -253,7 +303,7 @@ Delete key and all associated usage windows (cascade).
 
 ```bash
 curl -X DELETE http://localhost:3000/admin/keys/1 \
-  -H "Authorization: Bearer your-admin-secret"
+  -H "Authorization: Bearer your-a...ret"
 # 204 No Content
 ```
 
@@ -263,7 +313,7 @@ Generate new key value for existing key. Old key immediately invalidated.
 
 ```bash
 curl -X POST http://localhost:3000/admin/keys/1/regenerate \
-  -H "Authorization: Bearer your-admin-secret"
+  -H "Authorization: Bearer your-a...ret"
 ```
 
 ```json
@@ -276,7 +326,7 @@ Two methods for proxy endpoints:
 
 ```bash
 # Option 1: Bearer token
-Authorization: Bearer pk_your_key
+Authorization: Bearer ***
 
 # Option 2: x-api-key header
 x-api-key: pk_your_key
@@ -291,17 +341,33 @@ curl http://localhost:3000/health
 # {"status":"ok","timestamp":"2026-05-20T16:00:00Z"}
 ```
 
-### Check Quota
+### Check Quota & Spend
 
 ```bash
-curl -H "Authorization: Bearer pk_your_key" http://localhost:3000/stats
+curl -H "Authorization: Bearer ***" http://localhost:3000/stats
+```
+
+Response includes token usage, remaining quota, and cost:
+
+```json
+{
+  "key": "pk_a1...c3d",
+  "name": "User 1",
+  "total_lifetime_tokens": 567890,
+  "total_spend_usd": 12.34,
+  "current_usage": {
+    "tokens_used_in_current_window": 12345,
+    "remaining_tokens": 487655,
+    "window_spend_usd": 1.23
+  }
+}
 ```
 
 ### OpenAI-Compatible (Non-Streaming)
 
 ```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer pk_your_key" \
+  -H "Authorization: Bearer ***" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-4.7",
@@ -314,7 +380,7 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 
 ```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer pk_your_key" \
+  -H "Authorization: Bearer ***" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-4.7",
@@ -327,7 +393,7 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 
 ```bash
 curl -X POST http://localhost:3000/v1/messages \
-  -H "Authorization: Bearer pk_your_key" \
+  -H "Authorization: Bearer ***" \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
@@ -374,6 +440,39 @@ const msg = await anthropic.messages.create({
 console.log(msg.content);
 ```
 
+## Cost Tracking
+
+GLM Proxy tracks **cost per API key** by parsing the `x-litellm-response-cost` header from upstream responses (LiteLLM proxy). No extra API calls needed.
+
+### What's Tracked
+
+| Metric | Scope | Description |
+|--------|-------|-------------|
+| `total_spend_usd` | Lifetime | Cumulative USD spend across all requests |
+| `window_spend_usd` | Rolling 5h | USD spend within current rate limit window |
+
+### How It Works
+
+```
+Client request → GLM Proxy → Upstream (LiteLLM)
+                ← Response with x-litellm-response-cost header
+                → Parse header → Store cost in SQLite
+```
+
+- Cost parsed from response header only — **zero extra latency**
+- If header is missing (non-LiteLLM upstream), cost defaults to `0`
+- Visible in `/stats`, `/admin/stats`, and `/admin/keys/{id}`
+
+### Upstream Key Priority
+
+```
+User request
+    │
+    ├─ Key has upstream_key? ──Yes──→ use key's upstream_key
+    │
+    └─ No upstream_key ─────────────→ use MASTER_KEY from env
+```
+
 ## Key Management
 
 ### Via Admin API (Recommended)
@@ -385,7 +484,7 @@ All CRUD operations through `/admin/keys` endpoints. No manual file editing need
 Existing `apikeys.json` auto-migrates to SQLite on first boot:
 
 1. Server starts, detects `apikeys.json` exists
-2. Imports all keys + usage windows into SQLite
+2. Imports all keys + usage windows into SQLite (including `upstream_key`, spend data)
 3. Renames `apikeys.json` → `apikeys.json.migrated` (backup preserved)
 4. Subsequent boots use SQLite only
 
@@ -408,6 +507,8 @@ Existing `apikeys.json` auto-migrates to SQLite on first boot:
 }
 ```
 
+> **Note:** `glmkey` dalam JSON otomatis di-migrate ke `upstream_key` di SQLite.
+
 ### Key Fields
 
 | Field | Description |
@@ -415,42 +516,34 @@ Existing `apikeys.json` auto-migrates to SQLite on first boot:
 | `key` | Unique API key (`pk_` + 48 hex chars, auto-generated) |
 | `name` | Display name |
 | `model` | Model override (falls back to `DEFAULT_MODEL` → `glm-4.7`) |
-| `glm_key` | Per-key upstream Z.AI key (bypasses master `ZAI_API_KEY`) |
+| `upstream_key` | Per-key upstream key (bypasses `MASTER_KEY`) |
 | `token_limit_per_5h` | Token quota per rolling 5-hour window |
 | `expiry_date` | RFC3339 expiry date |
 | `created_at` | Auto-set on creation (RFC3339) |
 | `last_used` | Auto-updated on each request |
 | `total_requests` | Cumulative request count |
 | `total_lifetime_tokens` | Cumulative token count |
-
-### Upstream Key Priority
-
-```
-User request
-    │
-    ├─ Key has glm_key? ──Yes──→ use key's glm_key
-    │
-    └─ No glm_key ────────────→ use ZAI_API_KEY from env
-```
+| `total_spend_usd` | Cumulative USD spend (from LiteLLM cost header) |
 
 ## Environment Variables
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `ZAI_API_KEY` | — | **Yes** | Master upstream API key from Z.AI |
+| `MASTER_KEY` | — | **Yes** | Master upstream API key (LiteLLM virtual key / provider key) |
 | `ADMIN_API_KEY` | — | **Yes** (for Admin API) | Secret key for `/admin/*` endpoints |
+| `OPENAI_UPSTREAM` | `http://litellm:4000` | No | Upstream endpoint for OpenAI-compatible requests |
+| `ANTHROPIC_UPSTREAM` | `http://litellm:4000` | No | Upstream endpoint for Anthropic-compatible requests |
 | `DEFAULT_MODEL` | `glm-4.7` | No | Fallback model if per-key model is empty |
 | `ALLOWED_MODELS` | (all) | No | Comma-separated model allowlist |
 | `PORT` | `3000` | No | Server port |
-| `DATA_FILE` | `data/apikeys.json` | No | Data file path (SQLite DB auto-created alongside) |
+| `DB_PATH` | `data/proxy.db` | No | SQLite database path |
+| `DATA_FILE` | `data/apikeys.json` | No | Legacy JSON path (for migration) |
 
-### Where to get ZAI_API_KEY
+### Legacy Env Vars
 
-1. Open [Z.AI Open Platform](https://open.bigmodel.cn/)
-2. Login / register
-3. Go to **API Keys** / **Console**
-4. Create new key
-5. Copy key (format: `sk-xxxx...`)
+| Old | New | Notes |
+|-----|-----|-------|
+| `ZAI_API_KEY` | `MASTER_KEY` | Still works as fallback |
 
 ## Rate Limiting
 
@@ -477,17 +570,17 @@ User request
 glm-proxy-golang/
   cmd/server/main.go              # Entry point, graceful shutdown
   internal/
-    config/config.go              # Env parsing (ZAI_API_KEY, ADMIN_API_KEY, etc.)
+    config/config.go              # Env parsing (MASTER_KEY, UPSTREAM, etc.)
     storage/
       types.go                    # ApiKey, UsageWindow, RateLimitInfo, StatsResponse
-      sqlite.go                   # SQLite KeyStore (WAL, JSON migration, CRUD)
+      sqlite.go                   # SQLite KeyStore (WAL, JSON migration, CRUD, V2 schema)
     ratelimit/ratelimit.go        # Rolling 5h window rate limiter
     proxy/
-      types.go                    # Model resolution, header forwarding
-      openai.go                   # Proxy to api.z.ai (OpenAI-compatible)
-      anthropic.go                # Proxy to open.bigmodel.cn (Anthropic-compatible)
+      types.go                    # Model resolution, header forwarding, cost parsing
+      openai.go                   # Proxy → OPENAI_UPSTREAM (OpenAI-compatible)
+      anthropic.go                # Proxy → ANTHROPIC_UPSTREAM (Anthropic-compatible)
       sse.go                      # True chunked SSE streaming + token extraction
-      relay.go                    # Non-streaming response relay
+      relay.go                    # Non-streaming response relay + cost tracking
     middleware/
       context.go                  # Context key helpers
       auth.go                     # Auth (Bearer/x-api-key)
@@ -495,14 +588,41 @@ glm-proxy-golang/
     handler/
       router.go                   # Chi router + CORS + admin auth middleware
       health.go                   # GET /health, GET /
-      stats.go                    # GET /stats (per-key)
-      admin.go                    # /admin/* CRUD (keys, stats, regenerate)
+      stats.go                    # GET /stats (per-key, with spend)
+      admin.go                    # /admin/* CRUD (keys, stats, regenerate, spend)
       openai.go                   # /v1/* handler
       anthropic.go                # /v1/messages handler
   Dockerfile                      # Multi-stage: golang:1.25-alpine → scratch
   docker-compose.yml              # Dev: build lokal + Traefik labels
   docker-compose.prod.yml         # Prod: pull from GHCR + Traefik labels
   docker-compose.local.yml        # Local: tanpa domain/Traefik
+```
+
+### Request Flow
+
+```
+Client
+  │
+  ├─ POST /v1/chat/completions (OpenAI)
+  │   POST /v1/messages (Anthropic)
+  │
+  ▼
+Auth Middleware → Rate Limit → Proxy Handler
+                                  │
+                                  ├─ Resolve model (per-key > env DEFAULT_MODEL)
+                                  ├─ Resolve upstream key (per-key upstream_key > MASTER_KEY)
+                                  │
+                                  ▼
+                            Upstream (LiteLLM / Provider)
+                                  │
+                                  ▼
+                            Response (with x-litellm-response-cost header)
+                                  │
+                                  ├─ Extract tokens → UpdateUsage (SQLite)
+                                  ├─ Parse cost → Track spend (window + lifetime)
+                                  │
+                                  ▼
+                            Client Response
 ```
 
 ## Docker
@@ -578,7 +698,7 @@ Server hanya butuh **3 file**, tidak butuh source code:
 
 ```
 ~/serviceku/glm-proxy-golang/
-  .env                    # ZAI_API_KEY, ADMIN_API_KEY, DOMAIN
+  .env                    # MASTER_KEY, ADMIN_API_KEY, DOMAIN
   docker-compose.prod.yml # pull image dari GHCR
   data/                   # auto-created on first run
 ```
@@ -594,9 +714,11 @@ echo "$GITHUB_PAT" | docker login ghcr.io -u ajianaz --password-stdin
 
 # .env
 cat > ~/serviceku/glm-proxy-golang/.env << 'EOF'
-ZAI_API_KEY=sk-xxx
-ADMIN_API_KEY=$(openssl rand -hex 32)
+MASTER_KEY=sk-***
+ADMIN_API_KEY=***$(openssl rand -hex 32)
 DEFAULT_MODEL=glm-4.7
+OPENAI_UPSTREAM=http://litellm:4000
+ANTHROPIC_UPSTREAM=http://litellm:4000
 PORT=3000
 DOMAIN=glm.ajianaz.dev
 DOCKER_IMAGE=ghcr.io/ajianaz/glm-proxy-go:main
@@ -616,11 +738,15 @@ docker compose -f docker-compose.prod.yml up -d
 
 ## Available Models
 
-| Model | Description | Context | Max Output |
-|-------|-------------|---------|------------|
-| glm-4.7 | High-intelligence flagship | 200K | 96K |
-| glm-4.5-air | High cost-performance | 128K | 96K |
-| glm-4.5-flash | Free model | 128K | 96K |
+Depends on upstream configuration. When using LiteLLM, all models configured in LiteLLM's `config.yaml` are available. Example:
+
+| Model | Provider | Description |
+|-------|----------|-------------|
+| glm-4.7 | Z.AI | High-intelligence flagship |
+| glm-4.5-air | Z.AI | High cost-performance |
+| glm-4.5-flash | Z.AI | Free model |
+| claude-3-5-sonnet | Anthropic | Via LiteLLM |
+| gpt-4o | OpenAI | Via LiteLLM |
 
 ## Error Codes
 
@@ -632,7 +758,7 @@ docker compose -f docker-compose.prod.yml up -d
 | 403 | Key expired / Admin API not configured |
 | 404 | Key/resource not found |
 | 429 | Token quota exceeded |
-| 502 | Upstream (Z.AI) error |
+| 502 | Upstream error |
 
 ## Troubleshooting
 
@@ -646,15 +772,19 @@ docker compose up --build -d
 # Port conflict
 PORT=3001 docker compose up -d
 
-# Test upstream Z.AI key
-curl -H "Authorization: Bearer sk-xxx" https://api.z.ai/api/coding/paas/v4/models
+# Test upstream connectivity
+curl http://litellm:4000/health
 
 # Admin API returns 403
 # → ADMIN_API_KEY env not set. Check .env file.
 
 # Database corrupted
-# → Delete data/apikeys.db* and restart (data loss if no backup).
+# → Delete data/proxy.db* and restart (data loss if no backup).
 # → Or restore from data/apikeys.json.migrated backup.
+
+# Cost tracking shows 0
+# → Upstream must return x-litellm-response-cost header.
+# → LiteLLM proxy sends this automatically. Other upstreams may not.
 ```
 
 ## Makefile Commands

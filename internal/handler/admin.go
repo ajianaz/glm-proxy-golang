@@ -26,19 +26,37 @@ func NewAdminHandler(db *sql.DB) *AdminHandler {
 // --- Request/Response types ---
 
 type createKeyRequest struct {
-	Name            string `json:"name"`
-	Model           string `json:"model,omitempty"`
-	GlmKey          string `json:"glm_key,omitempty"`
-	TokenLimitPer5h int    `json:"token_limit_per_5h"`
-	ExpiryDate      string `json:"expiry_date"`
+	Name            string  `json:"name"`
+	Model           string  `json:"model,omitempty"`
+	UpstreamKey     string  `json:"upstream_key,omitempty"`
+	GlmKey          string  `json:"glmkey,omitempty"` // backward compat
+	TokenLimitPer5h int     `json:"token_limit_per_5h"`
+	ExpiryDate      string  `json:"expiry_date"`
+}
+
+// upstreamKeyValue returns the upstream key from the request, supporting both field names.
+func (r *createKeyRequest) upstreamKeyValue() string {
+	if r.UpstreamKey != "" {
+		return r.UpstreamKey
+	}
+	return r.GlmKey
 }
 
 type updateKeyRequest struct {
 	Name            *string `json:"name,omitempty"`
 	Model           *string `json:"model,omitempty"`
-	GlmKey          *string `json:"glm_key,omitempty"`
+	UpstreamKey     *string `json:"upstream_key,omitempty"`
+	GlmKey          *string `json:"glmkey,omitempty"` // backward compat
 	TokenLimitPer5h *int    `json:"token_limit_per_5h,omitempty"`
 	ExpiryDate      *string `json:"expiry_date,omitempty"`
+}
+
+// upstreamKeyValue returns the upstream key from the request, supporting both field names.
+func (r *updateKeyRequest) upstreamKeyValue() *string {
+	if r.UpstreamKey != nil {
+		return r.UpstreamKey
+	}
+	return r.GlmKey
 }
 
 type keyResponse struct {
@@ -46,21 +64,23 @@ type keyResponse struct {
 	Key                 string             `json:"key"`
 	Name                string             `json:"name"`
 	Model               string             `json:"model"`
-	GlmKey              string             `json:"glm_key,omitempty"`
+	UpstreamKey         string             `json:"upstream_key,omitempty"`
 	TokenLimitPer5h     int                `json:"token_limit_per_5h"`
 	ExpiryDate          string             `json:"expiry_date"`
 	CreatedAt           string             `json:"created_at"`
 	LastUsed            string             `json:"last_used"`
 	TotalRequests       int                `json:"total_requests"`
 	TotalLifetimeTokens int                `json:"total_lifetime_tokens"`
+	TotalSpendUSD       float64            `json:"total_spend_usd"`
 	UsageWindows        []storage.UsageWindow `json:"usage_windows,omitempty"`
 }
 
 type globalStatsResponse struct {
-	TotalKeys           int `json:"total_keys"`
-	ActiveKeys          int `json:"active_keys"`
-	TotalRequests       int `json:"total_requests"`
-	TotalLifetimeTokens int `json:"total_lifetime_tokens"`
+	TotalKeys           int     `json:"total_keys"`
+	ActiveKeys          int     `json:"active_keys"`
+	TotalRequests       int     `json:"total_requests"`
+	TotalLifetimeTokens int     `json:"total_lifetime_tokens"`
+	TotalSpendUSD       float64 `json:"total_spend_usd"`
 }
 
 // --- CRUD handlers ---
@@ -68,7 +88,7 @@ type globalStatsResponse struct {
 // ListKeys handles GET /admin/keys
 func (h *AdminHandler) ListKeys(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(`
-		SELECT id, key, name, model, glm_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens
+		SELECT id, key, name, model, upstream_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens, total_spend_usd
 		FROM api_keys ORDER BY id`)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "query error: "+err.Error())
@@ -79,8 +99,8 @@ func (h *AdminHandler) ListKeys(w http.ResponseWriter, r *http.Request) {
 	var keys []keyResponse
 	for rows.Next() {
 		var k keyResponse
-		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Model, &k.GlmKey, &k.TokenLimitPer5h,
-			&k.ExpiryDate, &k.CreatedAt, &k.LastUsed, &k.TotalRequests, &k.TotalLifetimeTokens); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Model, &k.UpstreamKey, &k.TokenLimitPer5h,
+			&k.ExpiryDate, &k.CreatedAt, &k.LastUsed, &k.TotalRequests, &k.TotalLifetimeTokens, &k.TotalSpendUSD); err != nil {
 			writeAdminError(w, http.StatusInternalServerError, "scan error: "+err.Error())
 			return
 		}
@@ -133,9 +153,9 @@ func (h *AdminHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := h.db.Exec(`
-		INSERT INTO api_keys (key, name, model, glm_key, token_limit_per_5h, expiry_date, created_at, last_used)
+		INSERT INTO api_keys (key, name, model, upstream_key, token_limit_per_5h, expiry_date, created_at, last_used)
 		VALUES (?, ?, ?, ?, ?, ?, ?, '')`,
-		apiKey, req.Name, req.Model, req.GlmKey, req.TokenLimitPer5h, req.ExpiryDate, now)
+		apiKey, req.Name, req.Model, req.upstreamKeyValue(), req.TokenLimitPer5h, req.ExpiryDate, now)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "insert failed: "+err.Error())
 		return
@@ -152,7 +172,7 @@ func (h *AdminHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 		Key:             apiKey, // Return full key ONLY on creation
 		Name:            req.Name,
 		Model:           req.Model,
-		GlmKey:          req.GlmKey,
+		UpstreamKey:     req.upstreamKeyValue(),
 		TokenLimitPer5h: req.TokenLimitPer5h,
 		ExpiryDate:      req.ExpiryDate,
 		CreatedAt:       now,
@@ -224,9 +244,9 @@ func (h *AdminHandler) UpdateKey(w http.ResponseWriter, r *http.Request) {
 		updates = append(updates, "model = ?")
 		args = append(args, *req.Model)
 	}
-	if req.GlmKey != nil {
-		updates = append(updates, "glm_key = ?")
-		args = append(args, *req.GlmKey)
+	if req.upstreamKeyValue() != nil {
+		updates = append(updates, "upstream_key = ?")
+		args = append(args, *req.upstreamKeyValue())
 	}
 	if req.TokenLimitPer5h != nil {
 		updates = append(updates, "token_limit_per_5h = ?")
@@ -288,6 +308,7 @@ func (h *AdminHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 // GlobalStats handles GET /admin/stats
 func (h *AdminHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
 	var totalKeys, activeKeys, totalReqs, totalTokens int
+	var totalSpend float64
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -295,12 +316,14 @@ func (h *AdminHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow("SELECT COUNT(*) FROM api_keys WHERE expiry_date > ?", now).Scan(&activeKeys)
 	h.db.QueryRow("SELECT COALESCE(SUM(total_requests), 0) FROM api_keys").Scan(&totalReqs)
 	h.db.QueryRow("SELECT COALESCE(SUM(total_lifetime_tokens), 0) FROM api_keys").Scan(&totalTokens)
+	h.db.QueryRow("SELECT COALESCE(SUM(total_spend_usd), 0) FROM api_keys").Scan(&totalSpend)
 
 	resp := globalStatsResponse{
 		TotalKeys:           totalKeys,
 		ActiveKeys:          activeKeys,
 		TotalRequests:       totalReqs,
 		TotalLifetimeTokens: totalTokens,
+		TotalSpendUSD:       totalSpend,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -345,10 +368,10 @@ func (h *AdminHandler) RegenerateKey(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) fetchKey(id int64) (keyResponse, bool) {
 	var k keyResponse
 	err := h.db.QueryRow(`
-		SELECT id, key, name, model, glm_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens
+		SELECT id, key, name, model, upstream_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens, total_spend_usd
 		FROM api_keys WHERE id = ?`, id).Scan(
-		&k.ID, &k.Key, &k.Name, &k.Model, &k.GlmKey, &k.TokenLimitPer5h,
-		&k.ExpiryDate, &k.CreatedAt, &k.LastUsed, &k.TotalRequests, &k.TotalLifetimeTokens)
+		&k.ID, &k.Key, &k.Name, &k.Model, &k.UpstreamKey, &k.TokenLimitPer5h,
+		&k.ExpiryDate, &k.CreatedAt, &k.LastUsed, &k.TotalRequests, &k.TotalLifetimeTokens, &k.TotalSpendUSD)
 	if err != nil {
 		return k, false
 	}
@@ -357,7 +380,7 @@ func (h *AdminHandler) fetchKey(id int64) (keyResponse, bool) {
 
 func (h *AdminHandler) loadWindows(keyID int64) ([]storage.UsageWindow, error) {
 	rows, err := h.db.Query(`
-		SELECT window_start, tokens_used, requests, cached_tokens
+		SELECT window_start, tokens_used, requests, cached_tokens, spend_usd
 		FROM usage_windows WHERE api_key_id = ? ORDER BY window_start`, keyID)
 	if err != nil {
 		return nil, err
@@ -367,7 +390,7 @@ func (h *AdminHandler) loadWindows(keyID int64) ([]storage.UsageWindow, error) {
 	var windows []storage.UsageWindow
 	for rows.Next() {
 		var w storage.UsageWindow
-		if err := rows.Scan(&w.WindowStart, &w.TokensUsed, &w.Requests, &w.CachedTokens); err != nil {
+		if err := rows.Scan(&w.WindowStart, &w.TokensUsed, &w.Requests, &w.CachedTokens, &w.SpendUSD); err != nil {
 			return nil, err
 		}
 		windows = append(windows, w)

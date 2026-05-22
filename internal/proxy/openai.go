@@ -15,7 +15,7 @@ var sharedClient = &http.Client{
 	Timeout: 300 * time.Second, // match server write timeout
 }
 
-// OpenAIProxy proxies requests to the OpenAI-compatible Z.AI endpoint.
+// OpenAIProxy proxies requests to the OpenAI-compatible upstream endpoint.
 type OpenAIProxy struct {
 	Config *config.Config
 	Store  *storage.KeyStore
@@ -24,11 +24,11 @@ type OpenAIProxy struct {
 // Proxy handles a single OpenAI-compatible proxy request.
 func (p *OpenAIProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey) {
 	model := GetModelForKey(apiKey, p.Config.DefaultModel)
-	upstreamKey := apiKey.UpstreamKey(p.Config.ZaiApiKey)
+	upstreamKey := apiKey.GetUpstreamKey(p.Config.MasterKey)
 
 	// Build upstream URL: strip /v1/ prefix
 	cleanPath := strings.TrimPrefix(r.URL.Path, "/v1")
-	upstreamURL := OpenAIUpstream + cleanPath
+	upstreamURL := p.Config.OpenAIUpstream + cleanPath
 
 	// Read and inject model
 	body, err := readAndInjectModel(r.Body, r.URL.Path, r.Method, model)
@@ -64,7 +64,7 @@ func (p *OpenAIProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *stor
 	}
 	defer resp.Body.Close()
 
-	// Non-streaming: relay response and track tokens
+	// Non-streaming: relay response and track tokens + cost
 	relayResponse(w, resp, p.Store, apiKey.Key, extractOpenAITokens)
 }
 
@@ -93,16 +93,19 @@ func extractOpenAITokens(body []byte) TokenResult {
 	return TokenResult{Total: int(total), Cached: cached}
 }
 
-// streamSSE proxies an SSE stream with inline token counting.
+// streamSSE proxies an SSE stream with inline token counting and cost tracking.
 func (p *OpenAIProxy) streamSSE(w http.ResponseWriter, resp *http.Response, keyValue string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(resp.StatusCode)
 
+	// Extract cost from upstream response headers (LiteLLM)
+	cost := parseCostFromHeader(resp.Header)
+
 	totalTokens := StreamSSE(w, resp.Body, "openai")
 	// resp.Body is closed by StreamSSE via defer
 
 	// Always update usage — records the request and any partial tokens collected
-	p.Store.UpdateUsage(keyValue, totalTokens.Total, totalTokens.Cached)
+	p.Store.UpdateUsage(keyValue, totalTokens.Total, totalTokens.Cached, cost)
 }

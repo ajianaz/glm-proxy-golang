@@ -59,6 +59,11 @@ func NewKeyStore(dataFile string) (*KeyStore, error) {
 		return nil, fmt.Errorf("create tables: %w", err)
 	}
 
+	// Run migrations (non-destructive ALTER TABLE ADD COLUMN)
+	if err := ks.migrate(); err != nil {
+		log.Printf("[keystore-sqlite] migration warning: %v", err)
+	}
+
 	// Migrate from JSON if needed
 	if err := ks.migrateFromJSON(dataFile); err != nil {
 		log.Printf("[keystore-sqlite] JSON migration warning: %v", err)
@@ -75,12 +80,14 @@ func (ks *KeyStore) createTables() error {
 		name                  TEXT    NOT NULL DEFAULT '',
 		model                 TEXT    NOT NULL DEFAULT '',
 		glm_key               TEXT    NOT NULL DEFAULT '',
+		upstream_key          TEXT    NOT NULL DEFAULT '',
 		token_limit_per_5h    INTEGER NOT NULL DEFAULT 0,
 		expiry_date           TEXT    NOT NULL DEFAULT '',
 		created_at            TEXT    NOT NULL DEFAULT '',
 		last_used             TEXT    NOT NULL DEFAULT '',
 		total_requests        INTEGER NOT NULL DEFAULT 0,
-		total_lifetime_tokens INTEGER NOT NULL DEFAULT 0
+		total_lifetime_tokens INTEGER NOT NULL DEFAULT 0,
+		total_spend_usd       REAL    NOT NULL DEFAULT 0
 	);
 	CREATE TABLE IF NOT EXISTS usage_windows (
 		id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,12 +95,55 @@ func (ks *KeyStore) createTables() error {
 		window_start TEXT    NOT NULL DEFAULT '',
 		tokens_used  INTEGER NOT NULL DEFAULT 0,
 		requests     INTEGER NOT NULL DEFAULT 0,
-		cached_tokens INTEGER NOT NULL DEFAULT 0
+		cached_tokens INTEGER NOT NULL DEFAULT 0,
+		spend_usd    REAL    NOT NULL DEFAULT 0
 	);
 	CREATE INDEX IF NOT EXISTS idx_usage_windows_key_id ON usage_windows(api_key_id);
 	`
 	_, err := ks.db.Exec(schema)
 	return err
+}
+
+// migrate runs non-destructive schema migrations.
+// Each migration adds new columns with defaults — safe for existing data.
+func (ks *KeyStore) migrate() error {
+	migrations := []struct {
+		table string
+		col   string
+		def   string
+	}{
+		{"api_keys", "upstream_key", "TEXT NOT NULL DEFAULT ''"},
+		{"api_keys", "total_spend_usd", "REAL NOT NULL DEFAULT 0"},
+		{"usage_windows", "spend_usd", "REAL NOT NULL DEFAULT 0"},
+	}
+
+	for _, m := range migrations {
+		// Check if column already exists (SQLite doesn't have IF NOT EXISTS for ALTER TABLE)
+		var count int
+		err := ks.db.QueryRow(
+			"SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?",
+			m.table, m.col,
+		).Scan(&count)
+		if err != nil {
+			log.Printf("[keystore-sqlite] migration check %s.%s: %v", m.table, m.col, err)
+			continue
+		}
+		if count > 0 {
+			continue // column already exists
+		}
+
+		sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", m.table, m.col, m.def)
+		if _, err := ks.db.Exec(sql); err != nil {
+			log.Printf("[keystore-sqlite] migration add %s.%s: %v", m.table, m.col, err)
+			continue
+		}
+		log.Printf("[keystore-sqlite] migration: added %s.%s", m.table, m.col)
+	}
+
+	// Copy glm_key → upstream_key for rows where upstream_key is empty
+	ks.db.Exec("UPDATE api_keys SET upstream_key = glm_key WHERE upstream_key = '' AND glm_key != ''")
+
+	return nil
 }
 
 // migrateFromJSON imports keys from a JSON file if SQLite is empty.
@@ -133,8 +183,8 @@ func (ks *KeyStore) migrateFromJSON(jsonFile string) error {
 	defer tx.Rollback()
 
 	insertKey, err := tx.Prepare(`
-		INSERT INTO api_keys (key, name, model, glm_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO api_keys (key, name, model, glm_key, upstream_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens, total_spend_usd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare insert key: %w", err)
@@ -142,8 +192,8 @@ func (ks *KeyStore) migrateFromJSON(jsonFile string) error {
 	defer insertKey.Close()
 
 	insertWindow, err := tx.Prepare(`
-		INSERT INTO usage_windows (api_key_id, window_start, tokens_used, requests, cached_tokens)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO usage_windows (api_key_id, window_start, tokens_used, requests, cached_tokens, spend_usd)
+		VALUES (?, ?, ?, ?, ?, 0)
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare insert window: %w", err)
@@ -151,7 +201,8 @@ func (ks *KeyStore) migrateFromJSON(jsonFile string) error {
 	defer insertWindow.Close()
 
 	for _, k := range apiData.Keys {
-		res, err := insertKey.Exec(k.Key, k.Name, k.Model, k.GlmKey, k.TokenLimitPer5h,
+		// Use UpstreamKey field (backward compat JSON handles glmkey → upstream_key)
+		res, err := insertKey.Exec(k.Key, k.Name, k.Model, k.UpstreamKey, k.UpstreamKey, k.TokenLimitPer5h,
 			k.ExpiryDate, k.CreatedAt, k.LastUsed, k.TotalRequests, k.TotalLifetimeTokens)
 		if err != nil {
 			return fmt.Errorf("insert key %s: %w", MaskKey(k.Key), err)
@@ -188,13 +239,13 @@ func (ks *KeyStore) FindKey(key string) (*ApiKey, bool) {
 	defer ks.mu.RUnlock()
 
 	row := ks.db.QueryRow(`
-		SELECT id, key, name, model, glm_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens
+		SELECT id, key, name, model, upstream_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens, total_spend_usd
 		FROM api_keys WHERE key = ?`, key)
 
 	var ak ApiKey
 	var id int64
-	err := row.Scan(&id, &ak.Key, &ak.Name, &ak.Model, &ak.GlmKey, &ak.TokenLimitPer5h,
-		&ak.ExpiryDate, &ak.CreatedAt, &ak.LastUsed, &ak.TotalRequests, &ak.TotalLifetimeTokens)
+	err := row.Scan(&id, &ak.Key, &ak.Name, &ak.Model, &ak.UpstreamKey, &ak.TokenLimitPer5h,
+		&ak.ExpiryDate, &ak.CreatedAt, &ak.LastUsed, &ak.TotalRequests, &ak.TotalLifetimeTokens, &ak.TotalSpendUSD)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, false
@@ -215,7 +266,7 @@ func (ks *KeyStore) FindKey(key string) (*ApiKey, bool) {
 // loadWindows reads all usage windows for a key ID. Caller must hold at least RLock.
 func (ks *KeyStore) loadWindows(keyID int64) ([]UsageWindow, error) {
 	rows, err := ks.db.Query(`
-		SELECT window_start, tokens_used, requests, cached_tokens
+		SELECT window_start, tokens_used, requests, cached_tokens, spend_usd
 		FROM usage_windows WHERE api_key_id = ? ORDER BY window_start`, keyID)
 	if err != nil {
 		return nil, err
@@ -225,7 +276,7 @@ func (ks *KeyStore) loadWindows(keyID int64) ([]UsageWindow, error) {
 	var windows []UsageWindow
 	for rows.Next() {
 		var w UsageWindow
-		if err := rows.Scan(&w.WindowStart, &w.TokensUsed, &w.Requests, &w.CachedTokens); err != nil {
+		if err := rows.Scan(&w.WindowStart, &w.TokensUsed, &w.Requests, &w.CachedTokens, &w.SpendUSD); err != nil {
 			return nil, err
 		}
 		windows = append(windows, w)
@@ -239,7 +290,7 @@ func (ks *KeyStore) AllKeys() []ApiKey {
 	defer ks.mu.RUnlock()
 
 	rows, err := ks.db.Query(`
-		SELECT id, key, name, model, glm_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens
+		SELECT id, key, name, model, upstream_key, token_limit_per_5h, expiry_date, created_at, last_used, total_requests, total_lifetime_tokens, total_spend_usd
 		FROM api_keys`)
 	if err != nil {
 		log.Printf("[keystore-sqlite] AllKeys query error: %v", err)
@@ -251,8 +302,8 @@ func (ks *KeyStore) AllKeys() []ApiKey {
 	for rows.Next() {
 		var ak ApiKey
 		var id int64
-		if err := rows.Scan(&id, &ak.Key, &ak.Name, &ak.Model, &ak.GlmKey, &ak.TokenLimitPer5h,
-			&ak.ExpiryDate, &ak.CreatedAt, &ak.LastUsed, &ak.TotalRequests, &ak.TotalLifetimeTokens); err != nil {
+		if err := rows.Scan(&id, &ak.Key, &ak.Name, &ak.Model, &ak.UpstreamKey, &ak.TokenLimitPer5h,
+			&ak.ExpiryDate, &ak.CreatedAt, &ak.LastUsed, &ak.TotalRequests, &ak.TotalLifetimeTokens, &ak.TotalSpendUSD); err != nil {
 			log.Printf("[keystore-sqlite] AllKeys scan error: %v", err)
 			continue
 		}
@@ -262,8 +313,8 @@ func (ks *KeyStore) AllKeys() []ApiKey {
 	return keys
 }
 
-// UpdateUsage atomically updates token usage for a key, consolidating active windows.
-func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens int) {
+// UpdateUsage atomically updates token usage and cost for a key, consolidating active windows.
+func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens int, cost float64) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
@@ -279,9 +330,10 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 
 	var keyID int64
 	var totalRequests, totalLifetimeTokens int
+	var totalSpend float64
 	err = tx.QueryRow(`
-		SELECT id, total_requests, total_lifetime_tokens
-		FROM api_keys WHERE key = ?`, keyValue).Scan(&keyID, &totalRequests, &totalLifetimeTokens)
+		SELECT id, total_requests, total_lifetime_tokens, total_spend_usd
+		FROM api_keys WHERE key = ?`, keyValue).Scan(&keyID, &totalRequests, &totalLifetimeTokens, &totalSpend)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return // key not found, silently ignore (matches original behavior)
@@ -292,7 +344,7 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 
 	// Load all usage windows for this key
 	rows, err := tx.Query(`
-		SELECT id, window_start, tokens_used, requests, cached_tokens
+		SELECT id, window_start, tokens_used, requests, cached_tokens, spend_usd
 		FROM usage_windows WHERE api_key_id = ?`, keyID)
 	if err != nil {
 		log.Printf("[keystore-sqlite] UpdateUsage load windows error: %v", err)
@@ -301,13 +353,14 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 	defer rows.Close()
 
 	var activeTokens, activeRequests, activeCached int
+	var activeSpend float64
 	var earliestStart time.Time
 	var windowIDs []int64 // IDs of windows to delete (all of them)
 
 	for rows.Next() {
 		var wID int64
 		var w UsageWindow
-		if err := rows.Scan(&wID, &w.WindowStart, &w.TokensUsed, &w.Requests, &w.CachedTokens); err != nil {
+		if err := rows.Scan(&wID, &w.WindowStart, &w.TokensUsed, &w.Requests, &w.CachedTokens, &w.SpendUSD); err != nil {
 			log.Printf("[keystore-sqlite] UpdateUsage window scan error: %v", err)
 			return
 		}
@@ -321,6 +374,7 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 			activeTokens += w.TokensUsed
 			activeRequests += w.Requests
 			activeCached += w.CachedTokens
+			activeSpend += w.SpendUSD
 			if earliestStart.IsZero() || ws.Before(earliestStart) {
 				earliestStart = ws
 			}
@@ -336,6 +390,7 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 	activeTokens += tokensUsed
 	activeRequests++
 	activeCached += cachedTokens
+	activeSpend += cost
 	if earliestStart.IsZero() {
 		earliestStart = now
 	}
@@ -357,18 +412,18 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 
 	// Insert the single consolidated window
 	_, err = tx.Exec(`
-		INSERT INTO usage_windows (api_key_id, window_start, tokens_used, requests, cached_tokens)
-		VALUES (?, ?, ?, ?, ?)`,
-		keyID, earliestStart.Format(time.RFC3339), activeTokens, activeRequests, activeCached)
+		INSERT INTO usage_windows (api_key_id, window_start, tokens_used, requests, cached_tokens, spend_usd)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		keyID, earliestStart.Format(time.RFC3339), activeTokens, activeRequests, activeCached, activeSpend)
 	if err != nil {
 		log.Printf("[keystore-sqlite] UpdateUsage insert window error: %v", err)
 		return
 	}
 
-	// Update key stats
+	// Update key stats (tokens + cost)
 	_, err = tx.Exec(`
-		UPDATE api_keys SET last_used = ?, total_requests = ?, total_lifetime_tokens = ? WHERE id = ?`,
-		now.Format(time.RFC3339), totalRequests+1, totalLifetimeTokens+tokensUsed, keyID)
+		UPDATE api_keys SET last_used = ?, total_requests = ?, total_lifetime_tokens = ?, total_spend_usd = ? WHERE id = ?`,
+		now.Format(time.RFC3339), totalRequests+1, totalLifetimeTokens+tokensUsed, totalSpend+cost, keyID)
 	if err != nil {
 		log.Printf("[keystore-sqlite] UpdateUsage update key error: %v", err)
 		return
@@ -379,8 +434,8 @@ func (ks *KeyStore) UpdateUsage(keyValue string, tokensUsed int, cachedTokens in
 		return
 	}
 
-	log.Printf("[keystore-sqlite] UpdateUsage: key=%s tokens=%d cached=%d requests=%d lifetime=%d active=%d",
-		MaskKey(keyValue), tokensUsed, cachedTokens, totalRequests+1, totalLifetimeTokens+tokensUsed, activeTokens)
+	log.Printf("[keystore-sqlite] UpdateUsage: key=%s tokens=%d cached=%d cost=%.4f requests=%d lifetime=%d active=%d",
+		MaskKey(keyValue), tokensUsed, cachedTokens, cost, totalRequests+1, totalLifetimeTokens+tokensUsed, activeTokens)
 }
 
 // GetStats returns a StatsResponse for a given key.
@@ -399,9 +454,11 @@ func (ks *KeyStore) GetStats(key *ApiKey, info *RateLimitInfo, model string) Sta
 			WindowStartedAt:           info.WindowStart,
 			WindowEndsAt:              info.WindowEnd,
 			RemainingTokens:           max(0, info.TokensLimit-info.TokensUsed),
+			WindowSpendUSD:            info.WindowSpendUSD,
 		},
 		TotalRequests:       key.TotalRequests,
 		TotalLifetimeTokens: key.TotalLifetimeTokens,
+		TotalSpendUSD:       key.TotalSpendUSD,
 	}
 }
 

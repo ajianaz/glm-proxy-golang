@@ -39,12 +39,12 @@ func TestGetModelForKey(t *testing.T) {
 
 func TestUpstreamKey(t *testing.T) {
 	key := &storage.ApiKey{}
-	if got := key.UpstreamKey("master"); got != "master" {
+	if got := key.GetUpstreamKey("master"); got != "master" {
 		t.Fatalf("expected master, got %s", got)
 	}
 
-	key.GlmKey = "custom"
-	if got := key.UpstreamKey("master"); got != "custom" {
+	key.UpstreamKey = "custom"
+	if got := key.GetUpstreamKey("master"); got != "custom" {
 		t.Fatalf("expected custom, got %s", got)
 	}
 }

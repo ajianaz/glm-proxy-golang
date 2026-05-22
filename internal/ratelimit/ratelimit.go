@@ -13,6 +13,7 @@ func CheckRateLimit(key *storage.ApiKey) *storage.RateLimitInfo {
 
 	var totalTokensUsed int
 	var windowStart time.Time
+	var windowSpend float64
 
 	for _, w := range key.UsageWindows {
 		ws, err := time.Parse(time.RFC3339, w.WindowStart)
@@ -21,6 +22,7 @@ func CheckRateLimit(key *storage.ApiKey) *storage.RateLimitInfo {
 		}
 		if !ws.Before(fiveHoursAgo) {
 			totalTokensUsed += w.TokensUsed
+			windowSpend += w.SpendUSD
 			if windowStart.IsZero() || ws.Before(windowStart) {
 				windowStart = ws
 			}
@@ -34,11 +36,12 @@ func CheckRateLimit(key *storage.ApiKey) *storage.RateLimitInfo {
 	windowEnd := windowStart.Add(5 * time.Hour)
 
 	info := &storage.RateLimitInfo{
-		Allowed:     true,
-		TokensUsed:  totalTokensUsed,
-		TokensLimit: key.TokenLimitPer5h,
-		WindowStart: windowStart.UTC().Format(time.RFC3339),
-		WindowEnd:   windowEnd.UTC().Format(time.RFC3339),
+		Allowed:       true,
+		TokensUsed:    totalTokensUsed,
+		TokensLimit:   key.TokenLimitPer5h,
+		WindowStart:   windowStart.UTC().Format(time.RFC3339),
+		WindowEnd:     windowEnd.UTC().Format(time.RFC3339),
+		WindowSpendUSD: windowSpend,
 	}
 
 	// Uses > (strictly greater) to match the TS implementation.
