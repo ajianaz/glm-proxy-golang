@@ -28,7 +28,7 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 	anthropicProxy := &proxy.AnthropicProxy{Config: cfg, Store: store}
 
 	// Public routes
-	r.Get("/", Index)
+	r.Get("/", Index(cfg))
 	r.Get("/health", Health)
 
 	// Protected routes (proxy users)

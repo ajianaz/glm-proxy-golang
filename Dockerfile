@@ -1,6 +1,9 @@
 # Build stage
 FROM golang:1.25-alpine AS builder
 
+# Build-time version (injected by CI)
+ARG VERSION=dev
+
 WORKDIR /build
 
 # Install tzdata for timezone support in scratch image
@@ -13,9 +16,9 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build static binary
+# Build static binary with version injected via ldflags
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /server ./cmd/server
 
 # Runtime stage

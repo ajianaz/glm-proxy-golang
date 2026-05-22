@@ -14,13 +14,16 @@ import (
 	"glm-proxy/internal/storage"
 )
 
+// Build-time version, injected via -ldflags
+var Version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		// Simple health check for Docker: just exit 0
 		os.Exit(0)
 	}
 
-	cfg := config.Load()
+	cfg := config.Load(Version)
 
 	store, err := storage.NewKeyStore(cfg.DataFile)
 	if err != nil {
@@ -41,7 +44,7 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("GLM Proxy starting on :%s", cfg.Port)
+		log.Printf("GLM Proxy v%s starting on :%s", Version, cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}

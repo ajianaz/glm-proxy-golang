@@ -14,9 +14,10 @@ type Config struct {
 	DefaultModel   string
 	AllowedModels  []string
 	FlushInterval  time.Duration
+	Version        string
 }
 
-func Load() *Config {
+func Load(version string) *Config {
 	return &Config{
 		Port:           getEnv("PORT", "3000"),
 		DataFile:       getEnv("DATA_FILE", "data/apikeys.json"),
@@ -25,6 +26,7 @@ func Load() *Config {
 		DefaultModel:   getEnv("DEFAULT_MODEL", "glm-4.7"),
 		AllowedModels:  parseAllowedModels(os.Getenv("ALLOWED_MODELS")),
 		FlushInterval:  30 * time.Second,
+		Version:        version,
 	}
 }
 

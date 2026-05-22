@@ -16,16 +16,18 @@ func Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // Index handles GET /
-func Index(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"name":    "Proxy Gateway",
-		"version": "1.0.0",
-		"endpoints": map[string]string{
-			"health":              "GET /health",
-			"stats":               "GET /stats",
-			"openai_compatible":   "ALL /v1/* (except /v1/messages)",
-			"anthropic_compatible": "POST /v1/messages",
-		},
-	})
+func Index(cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":    "Proxy Gateway",
+			"version": cfg.Version,
+			"endpoints": map[string]string{
+				"health":              "GET /health",
+				"stats":               "GET /stats",
+				"openai_compatible":   "ALL /v1/* (except /v1/messages)",
+				"anthropic_compatible": "POST /v1/messages",
+			},
+		})
+	}
 }
