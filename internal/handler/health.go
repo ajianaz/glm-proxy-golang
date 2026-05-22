@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"glm-proxy/internal/config"
 )
 
 // Health handles GET /health
