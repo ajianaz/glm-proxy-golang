@@ -43,9 +43,22 @@ func TestUpstreamKey(t *testing.T) {
 		t.Fatalf("expected master, got %s", got)
 	}
 
+	// Non-sk- prefix should fall back to master key
 	key.UpstreamKey = "custom"
-	if got := key.GetUpstreamKey("master"); got != "custom" {
-		t.Fatalf("expected custom, got %s", got)
+	if got := key.GetUpstreamKey("master"); got != "master" {
+		t.Fatalf("expected master (non-sk- key should fallback), got %s", got)
+	}
+
+	// Valid sk- prefix should be used
+	key.UpstreamKey = "sk-custom-key"
+	if got := key.GetUpstreamKey("master"); got != "sk-custom-key" {
+		t.Fatalf("expected sk-custom-key, got %s", got)
+	}
+
+	// Empty upstream_key should fall back to master
+	key.UpstreamKey = ""
+	if got := key.GetUpstreamKey("master"); got != "master" {
+		t.Fatalf("expected master, got %s", got)
 	}
 }
 

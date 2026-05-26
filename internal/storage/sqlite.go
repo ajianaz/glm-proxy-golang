@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,8 +141,13 @@ func (ks *KeyStore) migrate() error {
 		log.Printf("[keystore-sqlite] migration: added %s.%s", m.table, m.col)
 	}
 
-	// Copy glm_key → upstream_key for rows where upstream_key is empty
-	ks.db.Exec("UPDATE api_keys SET upstream_key = glm_key WHERE upstream_key = '' AND glm_key != ''")
+	// Copy glm_key → upstream_key ONLY if it's a valid LiteLLM key (sk-*)
+	// Old Z.AI direct keys (non-sk) should fall back to MASTER_KEY
+	ks.db.Exec("UPDATE api_keys SET upstream_key = glm_key WHERE upstream_key = '' AND glm_key != '' AND glm_key LIKE 'sk-%'")
+
+	// Clean existing rows: clear upstream_key that are not valid LiteLLM keys (sk-*)
+	// This fixes data from previous migration that blindly copied all glm_keys
+	ks.db.Exec("UPDATE api_keys SET upstream_key = '' WHERE upstream_key NOT LIKE 'sk-%' AND upstream_key != ''")
 
 	return nil
 }
@@ -201,8 +207,15 @@ func (ks *KeyStore) migrateFromJSON(jsonFile string) error {
 	defer insertWindow.Close()
 
 	for _, k := range apiData.Keys {
-		// Use UpstreamKey field (backward compat JSON handles glmkey → upstream_key)
-		res, err := insertKey.Exec(k.Key, k.Name, k.Model, k.UpstreamKey, k.UpstreamKey, k.TokenLimitPer5h,
+		// Only use UpstreamKey if it's a valid LiteLLM key (sk-*)
+		// Old glmkey (Z.AI direct keys) should NOT be copied to upstream_key
+		// They will fall back to MASTER_KEY via GetUpstreamKey()
+		validUpstreamKey := ""
+		if strings.HasPrefix(k.UpstreamKey, "sk-") {
+			validUpstreamKey = k.UpstreamKey
+		}
+
+		res, err := insertKey.Exec(k.Key, k.Name, k.Model, k.UpstreamKey, validUpstreamKey, k.TokenLimitPer5h,
 			k.ExpiryDate, k.CreatedAt, k.LastUsed, k.TotalRequests, k.TotalLifetimeTokens)
 		if err != nil {
 			return fmt.Errorf("insert key %s: %w", MaskKey(k.Key), err)

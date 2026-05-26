@@ -85,9 +85,16 @@ func TestKeyStore_UpstreamKey(t *testing.T) {
 		t.Fatal("expected master key when upstream_key is empty")
 	}
 
+	// Non-sk- key should fall back to master
 	k2 := &ApiKey{Key: "pk_test", UpstreamKey: "custom_key"}
-	if k2.GetUpstreamKey("master") != "custom_key" {
-		t.Fatal("expected custom upstream_key when set")
+	if k2.GetUpstreamKey("master") != "master" {
+		t.Fatal("expected master key for non-sk- upstream_key (should fallback)")
+	}
+
+	// Valid sk- key should be used
+	k3 := &ApiKey{Key: "pk_test", UpstreamKey: "sk-custom-key"}
+	if k3.GetUpstreamKey("master") != "sk-custom-key" {
+		t.Fatal("expected sk-custom-key when upstream_key starts with sk-")
 	}
 }
 
