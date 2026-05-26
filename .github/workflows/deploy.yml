@@ -1,0 +1,74 @@
+name: Deploy to Server
+
+on:
+  workflow_run:
+    workflows: ["Build & Push Docker Image"]
+    branches: [develop, main]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.event.workflow_run.head_branch || 'manual' }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy (${{ github.event.workflow_run.head_branch || 'manual' }})
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success')
+    steps:
+      - name: Fetch shared secrets from Infisical
+        uses: Infisical/secrets-action@v1.0.9
+        with:
+          method: "oidc"
+          identity-id: "6bd2b8d8-a9a3-4331-8b37-bf2764fc320b"
+          project-slug: "github-actions"
+          env-slug: "prod"
+          domain: "https://infisical.ajianaz.dev"
+
+      - name: Determine deploy path
+        id: path
+        run: |
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          if [ "$BRANCH" = "main" ]; then
+            echo "target=${{ secrets.DEPLOY_PATH_PROD }}" >> $GITHUB_OUTPUT
+            echo "Deploying to PROD"
+          else
+            echo "target=${{ secrets.DEPLOY_PATH_DEV }}" >> $GITHUB_OUTPUT
+            echo "Deploying to DEV"
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: ${{ env.DEPLOY_USER }}
+          key: ${{ env.DEPLOY_SSH_KEY }}
+          port: ${{ env.DEPLOY_PORT }}
+          script: |
+            cd ${{ steps.path.outputs.target }}
+
+            echo "=== Pulling latest code ==="
+            git pull
+
+            echo "=== Pulling latest images ==="
+            docker compose pull
+
+            echo "=== Restarting services ==="
+            docker compose up -d --remove-orphans --force-recreate
+
+            echo "=== Waiting for containers ==="
+            sleep 10
+
+            echo "=== Container status ==="
+            docker compose ps
+
+            echo "=== Logs ==="
+            docker compose logs --tail=30
+
+            echo "=== Deploy complete ==="
