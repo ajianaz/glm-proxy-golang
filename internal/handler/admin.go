@@ -409,7 +409,7 @@ func generateAPIKey() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return "pk_" + hex.EncodeToString(b), nil
+	return "sk-" + hex.EncodeToString(b), nil
 }
 
 func joinStr(parts []string, sep string) string {
