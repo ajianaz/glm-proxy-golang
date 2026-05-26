@@ -207,7 +207,7 @@ func TestUpstreamKey_PerKey(t *testing.T) {
 	store := createKeyStore(t, storage.ApiKey{
 		Key:             "pk_upstream_user",
 		Name:            "Upstream User",
-		UpstreamKey:     "user_custom_zai_key",
+		UpstreamKey:     "sk-user-custom-litellm-key",
 		TokenLimitPer5h: 100000,
 		ExpiryDate:      "2099-01-01T00:00:00Z",
 		CreatedAt:       time.Now().Format(time.RFC3339),
@@ -234,8 +234,58 @@ func TestUpstreamKey_PerKey(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// Should use per-key upstream_key, not master key
-	if receivedAuth != "Bearer user_custom_zai_key" {
-		t.Fatalf("expected Bearer user_custom_zai_key, got %s", receivedAuth)
+	// Should use per-key upstream_key (sk- prefix), not master key
+	if receivedAuth != "Bearer sk-user-custom-litellm-key" {
+		t.Fatalf("expected Bearer sk-user-custom-litellm-key, got %s", receivedAuth)
+	}
+}
+
+func TestUpstreamKey_NonSkFallsBackToMaster(t *testing.T) {
+	var receivedAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		resp := map[string]interface{}{
+			"id":      "chatcmpl-test",
+			"choices": []interface{}{},
+			"usage":   map[string]interface{}{"total_tokens": float64(1)},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream.Close()
+
+	store := createKeyStore(t, storage.ApiKey{
+		Key:             "pk_old_zai_key",
+		Name:            "Old ZAI Key User",
+		UpstreamKey:     "0cac_old_zai_key_1234", // non-sk- format (old Z.AI direct key)
+		TokenLimitPer5h: 100000,
+		ExpiryDate:      "2099-01-01T00:00:00Z",
+		CreatedAt:       time.Now().Format(time.RFC3339),
+		LastUsed:        time.Now().Format(time.RFC3339),
+		UsageWindows:    []storage.UsageWindow{},
+	})
+	cfg := newTestConfig(upstream.URL)
+
+	server := httptest.NewServer(handler.NewRouter(cfg, store))
+	defer server.Close()
+
+	body := `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}]}`
+	req, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer pk_old_zai_key")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Non-sk- upstream_key should fall back to master key
+	if receivedAuth != "Bearer master_key" {
+		t.Fatalf("expected Bearer master_key (fallback), got %s", receivedAuth)
 	}
 }

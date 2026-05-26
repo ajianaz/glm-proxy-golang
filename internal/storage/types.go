@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -52,10 +53,10 @@ func (k *ApiKey) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UpstreamKeyField returns the per-key upstream key if set, otherwise the master key.
-// Renamed from UpstreamKey() to avoid conflict with the field name.
+// GetUpstreamKey returns the per-key upstream key only if it's a valid LiteLLM key (sk-*).
+// Otherwise falls back to the master key.
 func (k *ApiKey) GetUpstreamKey(masterKey string) string {
-	if k.UpstreamKey != "" {
+	if k.UpstreamKey != "" && strings.HasPrefix(k.UpstreamKey, "sk-") {
 		return k.UpstreamKey
 	}
 	return masterKey
