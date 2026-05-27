@@ -16,6 +16,7 @@ type Config struct {
 	FlushInterval     time.Duration
 	OpenAIUpstream    string
 	AnthropicUpstream string
+	EnvMode           string // "dev" or "prod" — used for LiteLLM team/key suffix
 	Version           string
 }
 
@@ -30,6 +31,7 @@ func Load(version string) *Config {
 		FlushInterval:     30 * time.Second,
 		OpenAIUpstream:    getEnv("OPENAI_UPSTREAM", "http://litellm:4000"),
 		AnthropicUpstream: getEnv("ANTHROPIC_UPSTREAM", "http://litellm:4000"),
+		EnvMode:           getEnv("ENV_MODE", "prod"),
 		Version:           version,
 	}
 }

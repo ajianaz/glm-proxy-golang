@@ -14,16 +14,36 @@ import (
 type Client struct {
 	BaseURL   string // e.g. http://litellm:4000
 	MasterKey string // MASTER_KEY env var
+	EnvMode   string // "dev" or "prod" — suffix for team/key alias
 	HTTP      *http.Client
 }
 
 // NewClient creates a LiteLLM admin client.
-func NewClient(baseURL, masterKey string) *Client {
+func NewClient(baseURL, masterKey, envMode string) *Client {
 	return &Client{
 		BaseURL:   baseURL,
 		MasterKey: masterKey,
+		EnvMode:   envMode,
 		HTTP:      &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// TeamName returns the LiteLLM team name based on env mode.
+// dev → "glm-proxy-dev", prod → "glm-proxy", "" → "glm-proxy"
+func (c *Client) TeamName() string {
+	if c.EnvMode == "" || c.EnvMode == "prod" {
+		return "glm-proxy"
+	}
+	return "glm-proxy-" + c.EnvMode
+}
+
+// KeyAlias returns the suffixed key alias based on env mode.
+// dev → "name_dev", prod → "name"
+func (c *Client) KeyAlias(name string) string {
+	if c.EnvMode == "" || c.EnvMode == "prod" {
+		return name
+	}
+	return name + "_" + c.EnvMode
 }
 
 // TeamResponse is the response from POST /team/new

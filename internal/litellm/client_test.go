@@ -32,7 +32,7 @@ func TestEnsureTeam(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := NewClient(srv.URL, "test-master-key")
+		client := NewClient(srv.URL, "test-master-key", "")
 		teamID, err := client.EnsureTeam("glm-proxy")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -53,7 +53,7 @@ func TestEnsureTeam(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := NewClient(srv.URL, "test-master-key")
+		client := NewClient(srv.URL, "test-master-key", "")
 		teamID, err := client.EnsureTeam("glm-proxy")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -71,7 +71,7 @@ func TestEnsureTeam(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := NewClient(srv.URL, "test-master-key")
+		client := NewClient(srv.URL, "test-master-key", "")
 		_, err := client.EnsureTeam("glm-proxy")
 		if err == nil {
 			t.Fatal("expected error for 500 response")
@@ -105,7 +105,7 @@ func TestGenerateKey(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := NewClient(srv.URL, "test-master-key")
+		client := NewClient(srv.URL, "test-master-key", "")
 		key, err := client.GenerateKey("team-123", "test-key")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -122,7 +122,7 @@ func TestGenerateKey(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		client := NewClient(srv.URL, "test-master-key")
+		client := NewClient(srv.URL, "test-master-key", "")
 		_, err := client.GenerateKey("team-123", "test-key")
 		if err == nil {
 			t.Fatal("expected error for 500 response")
@@ -131,17 +131,59 @@ func TestGenerateKey(t *testing.T) {
 }
 
 func TestNewClient(t *testing.T) {
-	client := NewClient("http://litellm:4000", "sk-master")
+	client := NewClient("http://litellm:4000", "sk-master", "prod")
 	if client.BaseURL != "http://litellm:4000" {
 		t.Errorf("expected base URL http://litellm:4000, got %s", client.BaseURL)
 	}
 	if client.MasterKey != "sk-master" {
 		t.Errorf("expected master key sk-master, got %s", client.MasterKey)
 	}
+	if client.EnvMode != "prod" {
+		t.Errorf("expected env mode prod, got %s", client.EnvMode)
+	}
 	if client.HTTP == nil {
 		t.Error("expected HTTP client to be initialized")
 	}
 	if client.HTTP.Timeout != 30*time.Second {
 		t.Errorf("expected 30s timeout, got %s", client.HTTP.Timeout)
+	}
+}
+
+func TestTeamName(t *testing.T) {
+	tests := []struct {
+		envMode string
+		want    string
+	}{
+		{"prod", "glm-proxy"},
+		{"dev", "glm-proxy-dev"},
+		{"staging", "glm-proxy-staging"},
+		{"", "glm-proxy"}, // empty treated as prod
+	}
+	for _, tt := range tests {
+		c := NewClient("http://litellm:4000", "sk-master", tt.envMode)
+		if got := c.TeamName(); got != tt.want {
+			t.Errorf("EnvMode=%q TeamName()=%q, want %q", tt.envMode, got, tt.want)
+		}
+	}
+}
+
+func TestKeyAlias(t *testing.T) {
+	tests := []struct {
+		envMode string
+		name    string
+		want    string
+	}{
+		{"prod", "asa", "asa"},
+		{"dev", "asa", "asa_dev"},
+		{"staging", "asa", "asa_staging"},
+		{"", "asa", "asa"},        // empty treated as prod
+		{"dev", "", "_dev"},      // empty name still gets suffix
+		{"prod", "test-key", "test-key"},
+	}
+	for _, tt := range tests {
+		c := NewClient("http://litellm:4000", "sk-master", tt.envMode)
+		if got := c.KeyAlias(tt.name); got != tt.want {
+			t.Errorf("EnvMode=%q KeyAlias(%q)=%q, want %q", tt.envMode, tt.name, got, tt.want)
+		}
 	}
 }

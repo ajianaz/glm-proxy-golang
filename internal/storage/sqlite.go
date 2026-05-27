@@ -495,19 +495,19 @@ func (ks *KeyStore) DB() *sql.DB {
 }
 
 // MigrateLiteLLM ensures all API keys have valid LiteLLM virtual keys.
-// It creates the "glm-proxy" team if needed and generates virtual keys
+// It creates the team based on env mode (e.g. "glm-proxy-dev") if needed and generates virtual keys
 // for any existing keys that don't have a valid upstream_key.
 // Returns nil if all migrations succeeded, error if LiteLLM is unreachable.
-func (ks *KeyStore) MigrateLiteLLM(baseURL, masterKey string) error {
+func (ks *KeyStore) MigrateLiteLLM(baseURL, masterKey, envMode string) error {
 	if masterKey == "" {
 		log.Printf("[litellm-migration] skipped: MASTER_KEY not set")
 		return nil
 	}
 
-	client := litellm.NewClient(baseURL, masterKey)
+	client := litellm.NewClient(baseURL, masterKey, envMode)
 
 	// Step 1: Ensure team exists
-	teamID, err := client.EnsureTeam("glm-proxy")
+	teamID, err := client.EnsureTeam(client.TeamName())
 	if err != nil {
 		return fmt.Errorf("ensure team: %w", err)
 	}
@@ -544,8 +544,8 @@ func (ks *KeyStore) MigrateLiteLLM(baseURL, masterKey string) error {
 
 	// Step 3: Generate virtual key for each
 	for _, k := range keys {
-		alias := k.Name
-		if alias == "" {
+		alias := client.KeyAlias(k.Name)
+		if k.Name == "" {
 			alias = fmt.Sprintf("key-%d", k.ID)
 		}
 

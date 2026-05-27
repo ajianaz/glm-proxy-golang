@@ -32,7 +32,7 @@ func main() {
 	defer store.Close()
 
 	// Migrate existing keys to LiteLLM team
-	if err := store.MigrateLiteLLM(cfg.OpenAIUpstream, cfg.MasterKey); err != nil {
+	if err := store.MigrateLiteLLM(cfg.OpenAIUpstream, cfg.MasterKey, cfg.EnvMode); err != nil {
 		log.Printf("Warning: LiteLLM migration failed (keys will fallback to MASTER_KEY): %v", err)
 	}
 
