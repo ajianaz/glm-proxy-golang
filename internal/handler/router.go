@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"glm-proxy/internal/config"
+	"glm-proxy/internal/litellm"
 	"glm-proxy/internal/middleware"
 	"glm-proxy/internal/proxy"
 	"glm-proxy/internal/storage"
@@ -49,7 +50,8 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 	})
 
 	// Admin routes (gated by master API key from env)
-	admin := NewAdminHandler(store.DB())
+	llmClient := litellm.NewClient(cfg.OpenAIUpstream, cfg.MasterKey)
+	admin := NewAdminHandler(store.DB(), llmClient)
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(adminAuth(cfg.AdminAPIKey))
 

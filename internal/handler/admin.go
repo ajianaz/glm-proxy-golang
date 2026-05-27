@@ -5,22 +5,26 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
 
+	"glm-proxy/internal/litellm"
 	"glm-proxy/internal/storage"
 )
 
 // AdminHandler handles /admin/* routes, gated by master API key.
 type AdminHandler struct {
-	db *sql.DB
+	db      *sql.DB
+	litellm *litellm.Client
 }
 
 // NewAdminHandler creates an admin handler. The db is the raw *sql.DB
 // from the SQLite KeyStore — exposed via a new DB() method.
-func NewAdminHandler(db *sql.DB) *AdminHandler {
-	return &AdminHandler{db: db}
+func NewAdminHandler(db *sql.DB, llm *litellm.Client) *AdminHandler {
+	return &AdminHandler{db: db, litellm: llm}
 }
 
 // --- Request/Response types ---
@@ -177,6 +181,27 @@ func (h *AdminHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 		ExpiryDate:      req.ExpiryDate,
 		CreatedAt:       now,
 		LastUsed:        "",
+	}
+
+	// After successful INSERT, generate LiteLLM virtual key
+	if h.litellm != nil {
+		teamID, err := h.litellm.EnsureTeam("glm-proxy")
+		if err != nil {
+			log.Printf("[admin] warn: failed to ensure team: %v", err)
+		} else {
+			alias := req.Name
+			if alias == "" {
+				alias = fmt.Sprintf("key-%d", id)
+			}
+			virtualKey, err := h.litellm.GenerateKey(teamID, alias)
+			if err != nil {
+				log.Printf("[admin] warn: failed to generate liteLLM key: %v", err)
+			} else {
+				// Update the key's upstream_key
+				h.db.Exec("UPDATE api_keys SET upstream_key = ? WHERE id = ?", virtualKey, id)
+				resp.UpstreamKey = virtualKey
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -31,6 +31,11 @@ func main() {
 	}
 	defer store.Close()
 
+	// Migrate existing keys to LiteLLM team
+	if err := store.MigrateLiteLLM(cfg.OpenAIUpstream, cfg.MasterKey); err != nil {
+		log.Printf("Warning: LiteLLM migration failed (keys will fallback to MASTER_KEY): %v", err)
+	}
+
 	router := handler.NewRouter(cfg, store)
 
 	srv := &http.Server{
