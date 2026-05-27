@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"glm-proxy/internal/litellm"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -490,6 +492,79 @@ func (ks *KeyStore) IsDirty() bool {
 // DB returns the underlying *sql.DB for admin operations.
 func (ks *KeyStore) DB() *sql.DB {
 	return ks.db
+}
+
+// MigrateLiteLLM ensures all API keys have valid LiteLLM virtual keys.
+// It creates the "glm-proxy" team if needed and generates virtual keys
+// for any existing keys that don't have a valid upstream_key.
+// Returns nil if all migrations succeeded, error if LiteLLM is unreachable.
+func (ks *KeyStore) MigrateLiteLLM(baseURL, masterKey string) error {
+	if masterKey == "" {
+		log.Printf("[litellm-migration] skipped: MASTER_KEY not set")
+		return nil
+	}
+
+	client := litellm.NewClient(baseURL, masterKey)
+
+	// Step 1: Ensure team exists
+	teamID, err := client.EnsureTeam("glm-proxy")
+	if err != nil {
+		return fmt.Errorf("ensure team: %w", err)
+	}
+
+	// Step 2: Find keys without valid upstream_key
+	rows, err := ks.db.Query(
+		"SELECT id, name FROM api_keys WHERE upstream_key = '' OR upstream_key NOT LIKE 'sk-%' ORDER BY id",
+	)
+	if err != nil {
+		return fmt.Errorf("query keys without upstream: %w", err)
+	}
+	defer rows.Close()
+
+	type keyInfo struct {
+		ID   int64
+		Name string
+	}
+
+	var keys []keyInfo
+	for rows.Next() {
+		var k keyInfo
+		if err := rows.Scan(&k.ID, &k.Name); err != nil {
+			return fmt.Errorf("scan key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+
+	if len(keys) == 0 {
+		log.Printf("[litellm-migration] all keys already have valid upstream_key")
+		return nil
+	}
+
+	log.Printf("[litellm-migration] found %d keys without valid upstream_key, generating...", len(keys))
+
+	// Step 3: Generate virtual key for each
+	for _, k := range keys {
+		alias := k.Name
+		if alias == "" {
+			alias = fmt.Sprintf("key-%d", k.ID)
+		}
+
+		virtualKey, err := client.GenerateKey(teamID, alias)
+		if err != nil {
+			log.Printf("[litellm-migration] failed to generate key for #%d (%s): %v", k.ID, k.Name, err)
+			continue // skip this key, don't block others
+		}
+
+		_, err = ks.db.Exec("UPDATE api_keys SET upstream_key = ? WHERE id = ?", virtualKey, k.ID)
+		if err != nil {
+			log.Printf("[litellm-migration] failed to update key #%d: %v", k.ID, err)
+			continue
+		}
+
+		log.Printf("[litellm-migration] migrated key #%d (%s) → sk-...%s", k.ID, k.Name, virtualKey[len(virtualKey)-8:])
+	}
+
+	return nil
 }
 
 // MaskKey returns a masked version of the API key for logging and responses.
