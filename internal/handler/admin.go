@@ -185,12 +185,12 @@ func (h *AdminHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 
 	// After successful INSERT, generate LiteLLM virtual key
 	if h.litellm != nil {
-		teamID, err := h.litellm.EnsureTeam("glm-proxy")
+		teamID, err := h.litellm.EnsureTeam(h.litellm.TeamName())
 		if err != nil {
 			log.Printf("[admin] warn: failed to ensure team: %v", err)
 		} else {
-			alias := req.Name
-			if alias == "" {
+			alias := h.litellm.KeyAlias(req.Name)
+			if req.Name == "" {
 				alias = fmt.Sprintf("key-%d", id)
 			}
 			virtualKey, err := h.litellm.GenerateKey(teamID, alias)
