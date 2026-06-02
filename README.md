@@ -4,7 +4,7 @@ Go rewrite of the GLM Proxy API Gateway. Proxies requests to upstream LLM provid
 
 ## Storage: SQLite
 
-Since v0.2.0, storage uses **SQLite** (via [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure Go, zero CGO):
+Storage uses **SQLite** (via [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure Go, zero CGO):
 
 - **WAL mode** — concurrent read safety without blocking
 - **Auto-migration** — existing `apikeys.json` auto-detected and imported on first boot
@@ -79,7 +79,7 @@ curl -X POST http://localhost:3000/admin/keys \
     "token_limit_per_5h": 100000,
     "expiry_date": "2099-12-31T23:59:59Z"
   }'
-# Response: {"id":1,"key":"pk_a1b2c3...","name":"User 1",...}
+# Response: {"id":1,"key":"sk_a1b2c3...","name":"User 1",...}
 ```
 
 > **Simpan key-nya!** Full key hanya ditampilkan sekali saat creation.
@@ -162,15 +162,15 @@ Volume `./data:/app/data:rw` sudah mencakup semua file yang dibutuhkan:
 
 All admin endpoints require `ADMIN_API_KEY` via `Authorization: Bearer` or `x-api-key` header.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/admin/stats` | Global stats (total keys, active, tokens, spend) |
-| GET | `/admin/keys` | List all API keys (keys masked) |
-| POST | `/admin/keys` | Create new API key |
-| GET | `/admin/keys/{id}` | Get single key detail |
-| PUT | `/admin/keys/{id}` | Update key fields |
-| DELETE | `/admin/keys/{id}` | Delete key + cascade windows |
-| POST | `/admin/keys/{id}/regenerate` | Regenerate key value |
+| Method | Path | Description | Key in Response |
+|--------|------|-------------|-----------------|
+| GET | `/admin/stats` | Global stats (total keys, active, tokens, spend) | N/A |
+| GET | `/admin/keys` | List all API keys | Masked (`sk-a1...c3d`) |
+| POST | `/admin/keys` | Create new API key | **Full (unmasked)** |
+| GET | `/admin/keys/{id}` | Get single key detail | Masked |
+| PUT | `/admin/keys/{id}` | Update key fields | Masked |
+| DELETE | `/admin/keys/{id}` | Delete key + cascade windows | N/A |
+| POST | `/admin/keys/{id}/regenerate` | Regenerate key value | **Full (unmasked)** |
 
 ## Admin API Reference
 
@@ -239,20 +239,24 @@ curl -X POST http://localhost:3000/admin/keys \
 ```json
 {
   "id": 1,
-  "key": "pk_a1b2c3d4e5f6...",
+  "key": "sk-a1b2c3d4e5f6full_key_here_51chars_total",
   "name": "New User",
   "model": "glm-4.7",
-  "upstream_key": "sk-user-specific-key",
+  "upstream_key": "sk-use...-key",
   "token_limit_per_5h": 500000,
   "expiry_date": "2099-12-31T23:59:59Z",
+  "created_at": "2026-05-20T16:00:00Z",
+  "last_used": null,
+  "total_requests": 0,
+  "total_lifetime_tokens": 0,
   "total_spend_usd": 0,
-  "created_at": "2026-05-20T16:00:00Z"
+  "usage_windows": []
 }
 ```
 
 ### GET /admin/keys
 
-List all keys. Key values are masked (`pk_a1...c3`).
+List all keys. Key values are masked (`sk-a1...c3d`).
 
 ```bash
 curl http://localhost:3000/admin/keys \
@@ -271,18 +275,26 @@ curl http://localhost:3000/admin/keys/1 \
 ```json
 {
   "id": 1,
-  "key": "pk_a1...c3d",
+  "key": "sk-a1...c3d",
   "name": "New User",
   "model": "glm-4.7",
+  "upstream_key": "sk-use...-key",
+  "token_limit_per_5h": 500000,
+  "expiry_date": "2099-12-31T23:59:59Z",
+  "created_at": "2026-05-20T16:00:00Z",
+  "last_used": "2026-05-20T14:00:00Z",
+  "total_requests": 1234,
   "total_lifetime_tokens": 567890,
   "total_spend_usd": 12.34,
-  "current_usage": {
-    "tokens_used_in_current_window": 12345,
-    "remaining_tokens": 487655,
-    "window_spend_usd": 1.23,
-    "window_started_at": "2026-05-20T14:00:00Z",
-    "window_ends_at": "2026-05-20T19:00:00Z"
-  }
+  "usage_windows": [
+    {
+      "window_start": "2026-05-20T14:00:00Z",
+      "tokens_used": 12345,
+      "requests": 100,
+      "cached_tokens": 5000,
+      "spend_usd": 1.23
+    }
+  ]
 }
 ```
 
@@ -317,7 +329,21 @@ curl -X POST http://localhost:3000/admin/keys/1/regenerate \
 ```
 
 ```json
-{"key": "pk_new_random_hex_48_chars"}
+{
+  "id": 1,
+  "key": "sk_new_random_hex_48_chars_here_full_key",
+  "name": "New User",
+  "model": "glm-4.7",
+  "upstream_key": "sk-use...-key",
+  "token_limit_per_5h": 500000,
+  "expiry_date": "2099-12-31T23:59:59Z",
+  "created_at": "2026-05-20T16:00:00Z",
+  "last_used": "2026-05-20T14:00:00Z",
+  "total_requests": 1234,
+  "total_lifetime_tokens": 567890,
+  "total_spend_usd": 12.34,
+  "usage_windows": [...]
+}
 ```
 
 ## Authentication
@@ -329,7 +355,7 @@ Two methods for proxy endpoints:
 Authorization: Bearer ***
 
 # Option 2: x-api-key header
-x-api-key: pk_your_key
+x-api-key: sk_your_key
 ```
 
 ## Usage Examples
@@ -347,18 +373,25 @@ curl http://localhost:3000/health
 curl -H "Authorization: Bearer ***" http://localhost:3000/stats
 ```
 
-Response includes token usage, remaining quota, and cost:
+Response includes key info, token usage, remaining quota, and cost:
 
 ```json
 {
-  "key": "pk_a1...c3d",
-  "name": "User 1",
+  "key": "sk-a1...c3d",
+  "name": "New User",
+  "model": "glm-4.7",
+  "is_expired": false,
   "total_lifetime_tokens": 567890,
+  "total_requests": 1234,
   "total_spend_usd": 12.34,
   "current_usage": {
-    "tokens_used_in_current_window": 12345,
+    "window_start": "2026-05-20T14:00:00Z",
+    "tokens_used": 12345,
+    "requests": 100,
+    "cached_tokens": 5000,
+    "spend_usd": 1.23,
     "remaining_tokens": 487655,
-    "window_spend_usd": 1.23
+    "window_ends_at": "2026-05-20T19:00:00Z"
   }
 }
 ```
@@ -410,7 +443,7 @@ curl -X POST http://localhost:3000/v1/messages \
 import anthropic
 
 client = anthropic.Anthropic(
-    api_key='pk_your_key',
+    api_key='sk_your_key',
     base_url='http://localhost:3000',
 )
 
@@ -428,7 +461,7 @@ print(message.content)
 import Anthropic from '@anthropic-ai/sdk';
 
 const anthropic = new Anthropic({
-  apiKey: 'pk_your_key',
+  apiKey: 'sk_your_key',
   baseURL: 'http://localhost:3000',
 });
 
@@ -513,7 +546,7 @@ Existing `apikeys.json` auto-migrates to SQLite on first boot:
 
 | Field | Description |
 |-------|-------------|
-| `key` | Unique API key (`pk_` + 48 hex chars, auto-generated) |
+| `key` | Unique API key (`sk-` + 48 hex chars = 51 chars, auto-generated) |
 | `name` | Display name |
 | `model` | Model override (falls back to `DEFAULT_MODEL` → `glm-4.7`) |
 | `upstream_key` | Per-key upstream key (bypasses `MASTER_KEY`) |
@@ -538,6 +571,7 @@ Existing `apikeys.json` auto-migrates to SQLite on first boot:
 | `PORT` | `3000` | No | Server port |
 | `DB_PATH` | `data/proxy.db` | No | SQLite database path |
 | `DATA_FILE` | `data/apikeys.json` | No | Legacy JSON path (for migration) |
+| `ENV_MODE` | `prod` | No | Environment mode for LiteLLM team isolation (`prod`/`dev`/`staging`) |
 
 ### Legacy Env Vars
 
@@ -575,12 +609,15 @@ glm-proxy-golang/
       types.go                    # ApiKey, UsageWindow, RateLimitInfo, StatsResponse
       sqlite.go                   # SQLite KeyStore (WAL, JSON migration, CRUD, V2 schema)
     ratelimit/ratelimit.go        # Rolling 5h window rate limiter
+    litellm/
+      client.go                   # LiteLLM admin API client (team, key generation)
     proxy/
       types.go                    # Model resolution, header forwarding, cost parsing
       openai.go                   # Proxy → OPENAI_UPSTREAM (OpenAI-compatible)
       anthropic.go                # Proxy → ANTHROPIC_UPSTREAM (Anthropic-compatible)
       sse.go                      # True chunked SSE streaming + token extraction
       relay.go                    # Non-streaming response relay + cost tracking
+      converter.go                # OpenAI↔Anthropic JSON converter
     middleware/
       context.go                  # Context key helpers
       auth.go                     # Auth (Bearer/x-api-key)
@@ -592,6 +629,11 @@ glm-proxy-golang/
       admin.go                    # /admin/* CRUD (keys, stats, regenerate, spend)
       openai.go                   # /v1/* handler
       anthropic.go                # /v1/messages handler
+  test/
+    integration/
+      integration_test.go          # Public endpoint + CORS tests
+      streaming_test.go           # SSE streaming tests
+      admin_test.go               # Admin CRUD + masking tests
   Dockerfile                      # Multi-stage: golang:1.25-alpine → scratch
   docker-compose.yml              # Dev: build lokal + Traefik labels
   docker-compose.prod.yml         # Prod: pull from GHCR + Traefik labels
@@ -672,27 +714,26 @@ Folder `./data` di-host di-mount ke `/app/data` di container. Semua file databas
 
 ## CI/CD (GitHub Actions)
 
-Push ke `main` otomatis build dan push Docker image ke GitHub Container Registry.
+Dual-track CI/CD: `develop` and `main` branches + semver tags. Builds are pushed to GitHub Container Registry (GHCR) automatically.
 
-### Setup Secrets
+### Setup
 
-Di repo GitHub: **Settings > Secrets and variables > Actions > New repository secret**
+No custom secrets needed for pushing to GHCR. GitHub's built-in `GITHUB_TOKEN` is used automatically with `permissions: packages: write`.
 
-| Secret | Value |
-|--------|-------|
-| `DOCKER_BASEURL` | `ghcr.io` |
-| `DOCKER_USERNAME` | GitHub username |
-| `DOCKER_PASSWORD` | GitHub PAT (classic, scope: `write:packages`) |
+Deploy to the server is handled by a separate `deploy.yml` workflow triggered via `workflow_run`, using Infisical OIDC + SSH.
 
 ### Tagging
 
-| Trigger | Image Tag |
+| Trigger | Image Tags |
 |---------|-----------|
-| Push ke `main` | `main`, `sha-abc1234` |
-| Tag `v1.0.0` | `1.0.0`, `1.0`, `latest` |
+| Push to `develop` | `develop`, `sha-abc1234` |
+| Push to `main` | `latest`, `main`, `sha-abc1234` |
+| Tag `v0.x.x` | `v0.x.x`, `0.x`, `latest` |
 | Pull request | Build only, no push |
 
 ## Deploy ke Server (Minimal Files)
+
+> **Auto-deploy:** Pushes to `main` and semver tags automatically trigger `deploy.yml` (via `workflow_run`) which deploys to the server using Infisical OIDC + SSH. The manual steps below are still available if needed.
 
 Server hanya butuh **3 file**, tidak butuh source code:
 
@@ -742,11 +783,11 @@ Depends on upstream configuration. When using LiteLLM, all models configured in 
 
 | Model | Provider | Description |
 |-------|----------|-------------|
-| glm-4.7 | Z.AI | High-intelligence flagship |
-| glm-4.5-air | Z.AI | High cost-performance |
-| glm-4.5-flash | Z.AI | Free model |
-| claude-3-5-sonnet | Anthropic | Via LiteLLM |
-| gpt-4o | OpenAI | Via LiteLLM |
+| glm-4.6v | Z.AI | Vision-capable (via LiteLLM) |
+| glm-4.7 | Z.AI | Default model |
+| glm-5 | Z.AI | Latest generation |
+| glm-5-turbo | Z.AI | Fast variant |
+| glm-5.1 | Z.AI | Latest stable |
 
 ## Error Codes
 
