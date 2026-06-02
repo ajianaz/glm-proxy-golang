@@ -384,8 +384,16 @@ func (h *AdminHandler) RegenerateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch updated key and return full keyResponse
+	k, ok := h.fetchKey(id)
+	if !ok {
+		writeAdminError(w, http.StatusInternalServerError, "key disappeared after regenerate")
+		return
+	}
+	k.UsageWindows, _ = h.loadWindows(k.ID)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"key": newKey})
+	json.NewEncoder(w).Encode(k)
 }
 
 // --- Helpers ---
