@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"glm-proxy/internal/modelmap"
 	"glm-proxy/internal/storage"
 )
 
@@ -75,9 +76,10 @@ func parseFloat(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
-// readAndInjectModel reads the request body, injects the model field, and returns
-// the modified body as a new ReadCloser. Returns nil if no injection is needed.
-func readAndInjectModel(body io.ReadCloser, path, method, model string) (io.ReadCloser, error) {
+// readAndInjectModel reads the request body, applies model mapping (if configured),
+// injects the model field (if missing), and returns the modified body as a new ReadCloser.
+// Returns nil if no injection is needed.
+func readAndInjectModel(body io.ReadCloser, path, method, model string, mm *modelmap.ModelMap) (io.ReadCloser, error) {
 	if body == nil || (method != "POST" && method != "PUT" && method != "PATCH") {
 		return body, nil
 	}
@@ -88,9 +90,16 @@ func readAndInjectModel(body io.ReadCloser, path, method, model string) (io.Read
 	}
 	body.Close()
 
-	// Only inject model for relevant paths, and only if client didn't specify one
+	// Only inject model for relevant paths
 	if strings.Contains(path, "/chat/completions") || strings.Contains(path, "/completions") || strings.Contains(path, "/messages") {
-		if _, hasModel := bodyMap["model"]; !hasModel {
+		if clientModel, hasModel := bodyMap["model"].(string); hasModel {
+			// Apply model mapping to client-specified model
+			if mm != nil && mm.Enabled() {
+				bodyMap["model"] = mm.Resolve(clientModel)
+			}
+			// If client specified model, use it (mapped or original)
+		} else {
+			// No model specified — inject default
 			bodyMap["model"] = model
 		}
 

@@ -13,6 +13,7 @@ import (
 
 // ModelValidate returns middleware that restricts which models can be used.
 // If AllowedModels is empty, all models are allowed (backward compatible).
+// When model mapping is enabled, the mapped model is validated — not the original.
 func ModelValidate(cfg *config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if len(cfg.AllowedModels) == 0 {
@@ -48,10 +49,14 @@ func ModelValidate(cfg *config.Config) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Determine the effective model
+			// Determine the effective model (after mapping)
 			model := ""
 			if clientModel, ok := bodyMap["model"].(string); ok && clientModel != "" {
+				// Apply model mapping before validation
 				model = clientModel
+				if cfg.ModelMap != nil && cfg.ModelMap.Enabled() {
+					model = cfg.ModelMap.Resolve(clientModel)
+				}
 			} else {
 				// Client didn't specify model — resolve what will be injected
 				apiKey := GetApiKey(r)
@@ -60,7 +65,7 @@ func ModelValidate(cfg *config.Config) func(http.Handler) http.Handler {
 				}
 			}
 
-			// Validate
+			// Validate mapped model against allowlist
 			if model != "" && !allowed[model] {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
