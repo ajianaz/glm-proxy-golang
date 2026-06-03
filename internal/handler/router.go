@@ -31,6 +31,7 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 	// Public routes
 	r.Get("/", Index(cfg))
 	r.Get("/health", Health)
+	r.Get("/model-map", ModelMap(cfg))
 
 	// Protected routes (proxy users)
 	r.Group(func(r chi.Router) {

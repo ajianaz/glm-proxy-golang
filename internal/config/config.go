@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"glm-proxy/internal/modelmap"
 )
 
 type Config struct {
@@ -18,6 +20,7 @@ type Config struct {
 	AnthropicUpstream string
 	EnvMode           string // "dev" or "prod" — used for LiteLLM team/key suffix
 	Version           string
+	ModelMap          *modelmap.ModelMap // server-side model name mapping (Claude → GLM)
 }
 
 func Load(version string) *Config {
@@ -33,6 +36,7 @@ func Load(version string) *Config {
 		AnthropicUpstream: getEnv("ANTHROPIC_UPSTREAM", "http://litellm:4000"),
 		EnvMode:           getEnv("ENV_MODE", "prod"),
 		Version:           version,
+		ModelMap:          modelmap.New(os.Getenv("MODEL_MAP")),
 	}
 }
 

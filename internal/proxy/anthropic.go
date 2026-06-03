@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"glm-proxy/internal/config"
+	"glm-proxy/internal/modelmap"
 	"glm-proxy/internal/storage"
 )
 
@@ -25,8 +26,8 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	// Anthropic uses path as-is (e.g., /v1/messages)
 	upstreamURL := p.Config.AnthropicUpstream + r.URL.Path
 
-	// Read and inject model, then check if client wants streaming
-	body, bodyMap, err := readAndInjectModelWithMap(r.Body, r.URL.Path, r.Method, model)
+	// Read, map, and inject model, then check if client wants streaming
+	body, bodyMap, err := readAndInjectModelWithMap(r.Body, r.URL.Path, r.Method, model, p.Config.ModelMap)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -195,9 +196,10 @@ func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Reques
 	w.Write(bodyBytes)
 }
 
-// readAndInjectModelWithMap reads the request body, injects the model field,
-// and returns both the modified body as a ReadCloser and the parsed body map.
-func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string) (io.ReadCloser, map[string]interface{}, error) {
+// readAndInjectModelWithMap reads the request body, applies model mapping,
+// injects the model field (if missing), and returns both the modified body
+// as a ReadCloser and the parsed body map.
+func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, mm *modelmap.ModelMap) (io.ReadCloser, map[string]interface{}, error) {
 	if body == nil || (method != "POST" && method != "PUT" && method != "PATCH") {
 		return body, nil, nil
 	}
@@ -208,9 +210,15 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string) (
 	}
 	body.Close()
 
-	// Only inject model for relevant paths, and only if client didn't specify one
+	// Only inject model for relevant paths
 	if strings.Contains(path, "/chat/completions") || strings.Contains(path, "/completions") || strings.Contains(path, "/messages") {
-		if _, hasModel := bodyMap["model"]; !hasModel {
+		if clientModel, hasModel := bodyMap["model"].(string); hasModel {
+			// Apply model mapping to client-specified model
+			if mm != nil && mm.Enabled() {
+				bodyMap["model"] = mm.Resolve(clientModel)
+			}
+		} else {
+			// No model specified — inject default
 			bodyMap["model"] = model
 		}
 	}

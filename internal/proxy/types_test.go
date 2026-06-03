@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"glm-proxy/internal/modelmap"
 	"glm-proxy/internal/storage"
 )
 
@@ -63,11 +64,11 @@ func TestUpstreamKey(t *testing.T) {
 }
 
 func TestReadAndInjectModel_ClientModelPreserved(t *testing.T) {
-	// When client sends a model, it should be preserved (not overwritten)
+	// When client sends a model and mm is nil, it should be preserved (not overwritten)
 	body := strings.NewReader(`{"model": "gpt-4", "messages": []}`)
 	rc := ioReadCloser(body)
 
-	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7")
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +80,48 @@ func TestReadAndInjectModel_ClientModelPreserved(t *testing.T) {
 	}
 }
 
+func TestReadAndInjectModel_ModelMappingApplied(t *testing.T) {
+	// When client sends a Claude model name and mapping is enabled, it should be mapped
+	mm := modelmap.New("") // use defaults: sonnet → glm-5-turbo
+	body := strings.NewReader(`{"model": "claude-sonnet-4-20250514", "messages": []}`)
+	rc := ioReadCloser(body)
+
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7", mm)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(injected).Decode(&result)
+	if result["model"] != "glm-5-turbo" {
+		t.Fatalf("expected claude-sonnet-4-20250514 to be mapped to glm-5-turbo, got %v", result["model"])
+	}
+}
+
+func TestReadAndInjectModel_ModelMappingPassThroughGLM(t *testing.T) {
+	// GLM models should pass through unchanged even with mapping enabled
+	mm := modelmap.New("")
+	body := strings.NewReader(`{"model": "glm-5-turbo", "messages": []}`)
+	rc := ioReadCloser(body)
+
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7", mm)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(injected).Decode(&result)
+	if result["model"] != "glm-5-turbo" {
+		t.Fatalf("expected glm-5-turbo to pass through, got %v", result["model"])
+	}
+}
+
 func TestReadAndInjectModel_FallbackWhenNoModel(t *testing.T) {
 	// When client doesn't send a model, fallback should be used
 	body := strings.NewReader(`{"messages": []}`)
 	rc := ioReadCloser(body)
 
-	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7")
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +139,7 @@ func TestReadAndInjectModel_StreamOptionsInjected(t *testing.T) {
 	body := strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	rc := io.NopCloser(body)
 
-	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7")
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +166,7 @@ func TestReadAndInjectModel_StreamOptionsNotInjectedForAnthropic(t *testing.T) {
 	body := strings.NewReader(`{"model":"claude-3","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	rc := ioReadCloser(body)
 
-	injected, err := readAndInjectModel(rc, "/v1/messages", "POST", "glm-4.7")
+	injected, err := readAndInjectModel(rc, "/v1/messages", "POST", "glm-4.7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +184,7 @@ func TestReadAndInjectModel_StreamOptionsNotInjectedForNonStreaming(t *testing.T
 	body := strings.NewReader(`{"model":"gpt-4","messages":[],"stream":false}`)
 	rc := ioReadCloser(body)
 
-	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7")
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "POST", "glm-4.7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +202,7 @@ func TestReadAndInjectModel_NoInjection(t *testing.T) {
 	body := strings.NewReader(`{"model": "gpt-4"}`)
 	rc := ioReadCloser(body)
 
-	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "GET", "glm-4.7")
+	injected, err := readAndInjectModel(rc, "/v1/chat/completions", "GET", "glm-4.7", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

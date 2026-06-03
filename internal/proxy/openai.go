@@ -30,8 +30,8 @@ func (p *OpenAIProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *stor
 	cleanPath := strings.TrimPrefix(r.URL.Path, "/v1")
 	upstreamURL := p.Config.OpenAIUpstream + cleanPath
 
-	// Read and inject model
-	body, err := readAndInjectModel(r.Body, r.URL.Path, r.Method, model)
+	// Read, map, and inject model
+	body, err := readAndInjectModel(r.Body, r.URL.Path, r.Method, model, p.Config.ModelMap)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
