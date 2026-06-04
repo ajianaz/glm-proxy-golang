@@ -134,7 +134,8 @@ func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Reques
 	if strings.Contains(contentType, "text/event-stream") {
 		// Buffer the SSE stream and convert to a single Anthropic message
 		buffer := NewAnthropicStreamBuffer()
-		buffer.ThinkingRequested = thinkingRequested
+		// NOTE: Thinking synthesis disabled — Claude Code rejects synthetic thinking blocks
+		// buffer.ThinkingRequested = thinkingRequested
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
