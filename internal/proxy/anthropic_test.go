@@ -186,8 +186,8 @@ func TestReadAndInjectModelWithMap_StripsThinking(t *testing.T) {
 	// Verify the serialized body also doesn't contain thinking
 	var buf bytes.Buffer
 	buf.ReadFrom(reader)
-	if bytes.Contains(buf.Bytes(), []byte("thinking")) {
-		t.Fatalf("serialized body still contains 'thinking': %s", buf.String())
+	if bytes.Contains(buf.Bytes(), []byte("\"thinking\"")) {
+		t.Fatalf("serialized body still contains \"thinking\": %s", buf.String())
 	}
 }
 

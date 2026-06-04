@@ -113,14 +113,15 @@ func mapOpenAIFinishReason(fr string) string {
 // AnthropicStreamBuffer collects Anthropic SSE events into a final message.
 // It processes line-by-line SSE data from an Anthropic streaming response.
 type AnthropicStreamBuffer struct {
-	Content    strings.Builder
-	StopReason string
-	Model      string
-	ID         string
-	InputTokens  int
-	OutputTokens int
-	CacheCreation int
-	CacheRead    int
+	Content         strings.Builder
+	StopReason      string
+	Model           string
+	ID              string
+	InputTokens     int
+	OutputTokens    int
+	CacheCreation   int
+	CacheRead       int
+	ThinkingRequested bool // client requested extended thinking
 }
 
 // NewAnthropicStreamBuffer creates a new buffer for collecting Anthropic SSE events.
@@ -224,11 +225,29 @@ func (b *AnthropicStreamBuffer) ToAnthropicMessage(clientModel ...string) map[st
 		inputTokens = 1000 // conservative estimate
 	}
 
+	content := []map[string]interface{}{
+		{"type": "text", "text": b.Content.String()},
+	}
+
+	// If client requested thinking, synthesize a thinking block before text.
+	// Claude Code CLI v2.1.154+ enables thinking for sonnet by default and
+	// discards the response if no thinking blocks are present.
+	if b.ThinkingRequested && b.Content.Len() > 0 {
+		content = []map[string]interface{}{
+			{
+				"type":      "thinking",
+				"thinking":  "(internal reasoning)",
+				"signature": "",
+			},
+			content[0],
+		}
+	}
+
 	return map[string]interface{}{
 		"id":            id,
 		"type":          "message",
 		"role":          "assistant",
-		"content":       []map[string]interface{}{{"type": "text", "text": b.Content.String()}},
+		"content":       content,
 		"model":         model,
 		"stop_reason":   b.StopReason,
 		"stop_sequence": nil,

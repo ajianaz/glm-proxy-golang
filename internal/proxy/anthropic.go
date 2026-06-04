@@ -33,6 +33,17 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 		return
 	}
 
+	// Detect if client requested extended thinking (before it was stripped by readAndInjectModelWithMap)
+	thinkingRequested := false
+	// Note: thinking params are stripped before bodyMap reaches here, so we check
+	// via the request body. Since readAndInjectModelWithMap strips them, we need
+	// to add a detection mechanism there. For now, default to true for sonnet models.
+	// A better approach: always check if the original request had thinking.
+	if _, exists := bodyMap["_thinking_was_requested"]; exists {
+		thinkingRequested = true
+		delete(bodyMap, "_thinking_was_requested")
+	}
+
 	// Determine if client wants streaming — if stream is false or missing, we need to force stream
 	clientWantsStream := false
 	if stream, ok := bodyMap["stream"]; ok {
@@ -42,7 +53,7 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	}
 
 	if !clientWantsStream {
-		p.proxyNonStreaming(w, r, apiKey, body, bodyMap, upstreamURL, upstreamKey, clientModel)
+		p.proxyNonStreaming(w, r, apiKey, body, bodyMap, upstreamURL, upstreamKey, clientModel, thinkingRequested)
 		return
 	}
 
@@ -91,7 +102,7 @@ func (p *AnthropicProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, 
 
 // proxyNonStreaming handles non-streaming requests by forcing stream:true upstream,
 // buffering the SSE response, and converting it to a single Anthropic JSON response.
-func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey, originalBody io.ReadCloser, bodyMap map[string]interface{}, upstreamURL, upstreamKey, clientModel string) {
+func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey, originalBody io.ReadCloser, bodyMap map[string]interface{}, upstreamURL, upstreamKey, clientModel string, thinkingRequested bool) {
 	// Force stream: true in the body for upstream
 	bodyMap["stream"] = true
 	bodyBytes, err := json.Marshal(bodyMap)
@@ -134,6 +145,7 @@ func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Reques
 	if strings.Contains(contentType, "text/event-stream") {
 		// Buffer the SSE stream and convert to a single Anthropic message
 		buffer := NewAnthropicStreamBuffer()
+		buffer.ThinkingRequested = thinkingRequested
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
@@ -227,9 +239,10 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 		}
 
 		// Strip extended thinking parameters — upstream (LiteLLM/GLM) doesn't support them.
-		// Claude Code CLI sends thinking.type=enabled which causes it to expect thinking
-		// blocks in the response. Without this strip, Claude Code discards the response
-		// when it receives text-only content instead of thinking+text.
+		// Save a flag before stripping so the response can synthesize thinking blocks.
+		if _, hasThinking := bodyMap["thinking"]; hasThinking {
+			bodyMap["_thinking_was_requested"] = true
+		}
 		delete(bodyMap, "thinking")
 		delete(bodyMap, "budget_tokens")
 
