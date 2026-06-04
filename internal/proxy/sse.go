@@ -9,11 +9,16 @@ import (
 	"strings"
 )
 
+// charsPerToken is a rough estimate for English/mixed content.
+// Anthropic's actual tokenizer averages ~3.5-4.5 chars/token for mixed content.
+const charsPerToken = 4
+
 // StreamSSE reads from upstream body and writes SSE chunks to the client.
 // Returns the tokens parsed from the stream.
 // resp.Body is closed via defer.
-// For "anthropic" mode: deduplicates message_start events and strips provider
-// prefix from model names (e.g., "glm/glm-5-turbo" → "glm-5-turbo").
+// For "anthropic" mode: deduplicates message_start events, strips provider
+// prefix from model names, and injects estimated token counts when upstream
+// reports zero (needed for Claude Code CLI compatibility).
 func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResult {
 	defer body.Close()
 
@@ -28,9 +33,12 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 
 	var result TokenResult
 	var (
-		seenMessageStart bool  // track first message_start for dedup
+		seenMessageStart bool // track first message_start for dedup
 		lastEvent        string
-		skipNextData     bool  // skip the data line following a skipped duplicate event
+		skipNextData     bool // skip the data line following a skipped duplicate event
+
+		// Token estimation: accumulate text length from content_block_delta events
+		textCharCount int
 	)
 
 	for scanner.Scan() {
@@ -73,9 +81,21 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 			}
 
 			// Anthropic mode fixes
-			if mode == "anthropic" && lastEvent == "message_start" {
-				seenMessageStart = true
-				data = stripModelPrefix(data)
+			if mode == "anthropic" {
+				if lastEvent == "message_start" {
+					seenMessageStart = true
+					data = stripModelPrefix(data)
+				}
+
+				// Track text content length for token estimation
+				if lastEvent == "content_block_delta" {
+					textCharCount += extractTextDeltaLen(data)
+				}
+
+				// Inject estimated tokens into message_delta if upstream reports 0
+				if lastEvent == "message_delta" {
+					data = injectEstimatedTokens(data, textCharCount)
+				}
 			}
 
 			chunk := parseSSETokens(data, mode)
@@ -96,6 +116,82 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 	}
 
 	return result
+}
+
+// extractTextDeltaLen returns the length of text in a content_block_delta event.
+// Returns 0 if the event is not a text_delta or cannot be parsed.
+func extractTextDeltaLen(data string) int {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		return 0
+	}
+
+	delta, ok := m["delta"].(map[string]interface{})
+	if !ok {
+		return 0
+	}
+
+	if delta["type"] != "text_delta" {
+		return 0
+	}
+
+	text, ok := delta["text"].(string)
+	if !ok {
+		return 0
+	}
+
+	return len(text)
+}
+
+// injectEstimatedTokens patches message_delta SSE data to include estimated
+// token counts when the upstream reports zero output_tokens.
+// Claude Code CLI uses output_tokens to determine if the response has content;
+// if it's 0, Claude Code returns an empty result even when text deltas were received.
+func injectEstimatedTokens(data string, textCharCount int) string {
+	if textCharCount <= 0 {
+		return data
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		return data
+	}
+
+	if m["type"] != "message_delta" {
+		return data
+	}
+
+	usage, ok := m["usage"].(map[string]interface{})
+	if !ok {
+		return data
+	}
+
+	// Only inject if upstream reports 0 output tokens
+	outputTokens, _ := usage["output_tokens"].(float64)
+	if outputTokens > 0 {
+		return data
+	}
+
+	// Estimate tokens from accumulated text length
+	estimated := textCharCount / charsPerToken
+	if estimated < 1 {
+		estimated = 1
+	}
+
+	usage["output_tokens"] = float64(estimated)
+
+	// Also estimate input tokens if zero (rough: system prompt + user message)
+	inputTokens, _ := usage["input_tokens"].(float64)
+	if inputTokens == 0 {
+		// Conservative estimate for a typical Claude Code request
+		usage["input_tokens"] = float64(1000)
+	}
+
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return data
+	}
+	return string(updated)
 }
 
 // stripModelPrefix removes the provider prefix from the model field in SSE data.
