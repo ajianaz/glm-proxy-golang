@@ -141,3 +141,28 @@ func (mm *ModelMap) Entries() map[string]string {
 	}
 	return result
 }
+
+// ClientModels returns all client-facing model names that the proxy accepts.
+// These are the aliases that will be mapped to upstream models.
+// Claude Code CLI calls GET /v1/models to validate model names before making requests.
+func (mm *ModelMap) ClientModels() []string {
+	if !mm.enabled {
+		return nil
+	}
+	models := make([]string, 0, len(mm.specific)+len(mm.tier))
+	for k := range mm.specific {
+		models = append(models, k)
+	}
+	// Add well-known Claude model names for each tier
+	for tier := range mm.tier {
+		switch tier {
+		case TierOpus:
+			models = append(models, "claude-opus-4-20250514", "claude-opus-4-0")
+		case TierSonnet:
+			models = append(models, "claude-sonnet-4-20250514", "claude-sonnet-4-0", "claude-sonnet-4-6")
+		case TierHaiku:
+			models = append(models, "claude-haiku-3-5-20241022", "claude-haiku-3-5", "claude-3-5-haiku-20241022")
+		}
+	}
+	return models
+}

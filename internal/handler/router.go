@@ -44,6 +44,10 @@ func NewRouter(cfg *config.Config, store *storage.KeyStore) http.Handler {
 		// Anthropic: POST /v1/messages (must be before the catch-all)
 		r.Post("/v1/messages", Anthropic(anthropicProxy))
 
+		// GET /v1/models: proxy to upstream but inject client-facing model aliases
+		// so Claude Code CLI can validate model names before sending requests.
+		r.Get("/v1/models", Models(cfg))
+
 		// OpenAI-compatible: ALL /v1/*
 		r.Route("/v1", func(r chi.Router) {
 			r.HandleFunc("/*", OpenAI(openaiProxy))
