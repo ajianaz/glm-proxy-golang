@@ -42,7 +42,7 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	}
 
 	if !clientWantsStream {
-		p.proxyNonStreaming(w, r, apiKey, body, bodyMap, upstreamURL, upstreamKey)
+		p.proxyNonStreaming(w, r, apiKey, body, bodyMap, upstreamURL, upstreamKey, clientModel)
 		return
 	}
 
@@ -91,7 +91,7 @@ func (p *AnthropicProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, 
 
 // proxyNonStreaming handles non-streaming requests by forcing stream:true upstream,
 // buffering the SSE response, and converting it to a single Anthropic JSON response.
-func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey, originalBody io.ReadCloser, bodyMap map[string]interface{}, upstreamURL, upstreamKey string) {
+func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey, originalBody io.ReadCloser, bodyMap map[string]interface{}, upstreamURL, upstreamKey, clientModel string) {
 	// Force stream: true in the body for upstream
 	bodyMap["stream"] = true
 	bodyBytes, err := json.Marshal(bodyMap)
@@ -140,7 +140,7 @@ func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Reques
 			buffer.ProcessLine(scanner.Text())
 		}
 
-		message := buffer.ToAnthropicMessage()
+		message := buffer.ToAnthropicMessage(clientModel)
 		respJSON, err := json.Marshal(message)
 		if err != nil {
 			WriteError(w, http.StatusInternalServerError, "Failed to marshal response")
