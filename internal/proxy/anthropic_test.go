@@ -164,7 +164,7 @@ func TestReadAndInjectModelWithMap_StripsThinking(t *testing.T) {
 		"budget_tokens": 10000
 	}`)
 
-	reader, bodyMap, err := readAndInjectModelWithMap(io.NopCloser(body), "/v1/messages", "POST", "glm-5-turbo", nil)
+	reader, bodyMap, _, err := readAndInjectModelWithMap(io.NopCloser(body), "/v1/messages", "POST", "glm-5-turbo", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
