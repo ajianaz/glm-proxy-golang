@@ -32,15 +32,19 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string, clientMod
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	var result TokenResult
-	var (
-		seenMessageStart bool // track first message_start for dedup
-		lastEvent        string
-		skipNextData     bool // skip the data line following a skipped duplicate event
+var result TokenResult
+var (
+	seenMessageStart bool // track first message_start for dedup
+	lastEvent        string
+	skipNextData     bool // skip the data line following a skipped duplicate event
 
-		// Token estimation: accumulate text length from content_block_delta events
-		textCharCount int
-	)
+	// Token estimation: accumulate text length from content_block_delta events
+	textCharCount int
+
+	// Thinking injection: inject synthetic thinking block before first text block
+	// when client uses a mapped model name (Claude Code CLI compat)
+	thinkingInjected bool
+)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -90,6 +94,28 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string, clientMod
 					// Claude Code rejects responses where the model doesn't match the request.
 					if len(clientModel) > 0 && clientModel[0] != "" {
 						data = replaceResponseModel(data, clientModel[0])
+					}
+				}
+
+				// Inject synthetic thinking block before first text content block
+				// when client requested extended thinking (Claude Code CLI compat).
+				if lastEvent == "content_block_start" && !thinkingInjected {
+					var evt map[string]interface{}
+					if json.Unmarshal([]byte(data), &evt) == nil {
+						if block, ok := evt["content_block"].(map[string]interface{}); ok {
+							if block["type"] == "text" && len(clientModel) > 0 && clientModel[0] != "" {
+								// Get the index from the event
+								index := evt["index"]
+								// Inject thinking block_start
+								fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%v,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n", index)
+								// Inject thinking delta
+								fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":%v,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"(internal reasoning)\"}}\n\n", index)
+								// Inject thinking block_stop
+								fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%v}\n\n", index)
+								flusher.Flush()
+								thinkingInjected = true
+							}
+						}
 					}
 				}
 
