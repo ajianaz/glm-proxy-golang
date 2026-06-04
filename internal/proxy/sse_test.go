@@ -103,3 +103,76 @@ func TestStreamSSE_BasicForwarding(t *testing.T) {
 		t.Fatalf("expected 0 tokens, got %d", result.Total)
 	}
 }
+
+func TestStreamSSE_AnthropicDedupMessageStart(t *testing.T) {
+	sseData := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm/glm-5-turbo\"}}\n" +
+		"\n" +
+		"event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm/glm-5-turbo\"}}\n" +
+		"\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n" +
+		"\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n" +
+		"\n"
+
+	body := strings.NewReader(sseData)
+	w := httptest.NewRecorder()
+	StreamSSE(w, ioReadCloser(body), "anthropic")
+
+	out := w.Body.String()
+
+	// Should only have one message_start
+	msgStartCount := strings.Count(out, "event: message_start")
+	if msgStartCount != 1 {
+		t.Fatalf("expected 1 message_start event, got %d. Output:\n%s", msgStartCount, out)
+	}
+
+	// Model prefix should be stripped
+	if strings.Contains(out, "glm/glm-5-turbo") {
+		t.Fatal("expected model prefix to be stripped, still contains 'glm/glm-5-turbo'")
+	}
+	if !strings.Contains(out, "glm-5-turbo") {
+		t.Fatal("expected 'glm-5-turbo' (stripped prefix) in output")
+	}
+}
+
+func TestStripModelPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "strips provider prefix",
+			input:    `{"type":"message_start","message":{"id":"msg_1","model":"glm/glm-5-turbo"}}`,
+			expected: `glm-5-turbo`,
+		},
+		{
+			name:     "no prefix — unchanged",
+			input:    `{"type":"message_start","message":{"id":"msg_1","model":"glm-5-turbo"}}`,
+			expected: `glm-5-turbo`,
+		},
+		{
+			name:     "non-message_start — unchanged",
+			input:    `{"type":"message_delta","model":"glm/glm-5-turbo"}`,
+			expected: `glm/glm-5-turbo`,
+		},
+		{
+			name:     "invalid JSON — unchanged",
+			input:    `not json`,
+			expected: `not json`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := stripModelPrefix(tt.input)
+			if !strings.Contains(result, tt.expected) {
+				t.Fatalf("expected %q in result, got: %s", tt.expected, result)
+			}
+		})
+	}
+}
