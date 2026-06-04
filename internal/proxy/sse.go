@@ -32,19 +32,24 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string, clientMod
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-var result TokenResult
-var (
-	seenMessageStart bool // track first message_start for dedup
-	lastEvent        string
-	skipNextData     bool // skip the data line following a skipped duplicate event
+	var result TokenResult
+	var (
+		seenMessageStart bool // track first message_start for dedup
+		lastEvent        string
+		skipNextData     bool // skip the data line following a skipped duplicate event
 
-	// Token estimation: accumulate text length from content_block_delta events
-	textCharCount int
+		// Token estimation: accumulate text length from content_block_delta events
+		textCharCount int
 
-	// Thinking injection: inject synthetic thinking block before first text block
-	// when client uses a mapped model name (Claude Code CLI compat)
-	thinkingInjected bool
-)
+		// Thinking injection state
+		needThinkingInject bool         // true when we should inject thinking before first text block
+		thinkInjectDone    bool         // true after thinking block has been injected
+		indexOffset        int          // +1 after thinking injection to shift text block indices
+		pendingEventLine   string       // buffered event line for content_block_start when thinking needed
+	)
+
+	// Determine if thinking injection is needed (only for Claude model names)
+	shouldInjectThinking := len(clientModel) > 0 && clientModel[0] != "" && strings.HasPrefix(clientModel[0], "claude-")
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -63,6 +68,15 @@ var (
 			if mode == "anthropic" && lastEvent == "message_start" && seenMessageStart {
 				skipNextData = true
 				continue
+			}
+
+			// For first content_block_start: buffer the event line instead of writing
+			// immediately, so we can inject thinking before it if needed.
+			if mode == "anthropic" && shouldInjectThinking && !thinkInjectDone &&
+				lastEvent == "content_block_start" && !needThinkingInject {
+				pendingEventLine = line
+				needThinkingInject = true
+				continue // don't write yet — wait for the data line
 			}
 
 			fmt.Fprintf(w, "%s\n", line)
@@ -91,32 +105,53 @@ var (
 					seenMessageStart = true
 					data = stripModelPrefix(data)
 					// Replace model name with client-requested model for Claude Code CLI compat.
-					// Claude Code rejects responses where the model doesn't match the request.
 					if len(clientModel) > 0 && clientModel[0] != "" {
 						data = replaceResponseModel(data, clientModel[0])
 					}
 				}
 
-				// Inject synthetic thinking block before first text content block
-				// when client uses a Claude model name (Claude Code CLI compat).
-				// Only trigger for Claude model names (not glm-* direct access).
-				if lastEvent == "content_block_start" && !thinkingInjected {
+				// Thinking injection: we buffered the content_block_start event line.
+				// Now we have the data line — check if it's a text block.
+				if needThinkingInject && !thinkInjectDone {
 					var evt map[string]interface{}
+					isTextBlock := false
+					originalIndex := 0
 					if json.Unmarshal([]byte(data), &evt) == nil {
 						if block, ok := evt["content_block"].(map[string]interface{}); ok {
-							if block["type"] == "text" && len(clientModel) > 0 && clientModel[0] != "" && strings.HasPrefix(clientModel[0], "claude-") {
-								// Get the index from the event
-								index := evt["index"]
-								// Inject thinking block_start
-								fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%v,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n", index)
-								// Inject thinking delta
-								fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":%v,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"(internal reasoning)\"}}\n\n", index)
-								// Inject thinking block_stop
-								fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%v}\n\n", index)
-								flusher.Flush()
-								thinkingInjected = true
+							if block["type"] == "text" {
+								isTextBlock = true
+								if idx, ok := evt["index"].(float64); ok {
+									originalIndex = int(idx)
+								}
 							}
 						}
+					}
+
+					if isTextBlock {
+						// Inject thinking block at index originalIndex, then write text block at originalIndex+1
+						injectThinkingSSEBlock(w, flusher, originalIndex)
+						thinkInjectDone = true
+						indexOffset = 1 // shift all subsequent content block indices by 1
+
+						// Write the buffered event line (content_block_start) with bumped index
+						fmt.Fprintf(w, "%s\n", pendingEventLine)
+						// Rewrite the data line with incremented index
+						data = incrementContentBlockIndex(data, originalIndex+1)
+						pendingEventLine = ""
+						needThinkingInject = false
+					} else {
+						// Not a text block — just release the buffered event line as-is
+						fmt.Fprintf(w, "%s\n", pendingEventLine)
+						pendingEventLine = ""
+						needThinkingInject = false
+					}
+				}
+
+				// Increment content block indices after thinking injection
+				if indexOffset > 0 {
+					switch lastEvent {
+					case "content_block_start", "content_block_delta", "content_block_stop":
+						data = incrementContentBlockIndex(data, indexOffset)
 					}
 				}
 
@@ -143,6 +178,12 @@ var (
 		flusher.Flush()
 	}
 
+	// If we buffered an event line but never got data (stream ended), flush it
+	if pendingEventLine != "" {
+		fmt.Fprintf(w, "%s\n", pendingEventLine)
+		flusher.Flush()
+	}
+
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		fmt.Fprint(w, "event: error\ndata: {\"error\": \"stream interrupted\"}\n\n")
 		flusher.Flush()
@@ -151,8 +192,40 @@ var (
 	return result
 }
 
-// extractTextDeltaLen returns the length of text in a content_block_delta event.
-// Returns 0 if the event is not a text_delta or cannot be parsed.
+// injectThinkingSSEBlock writes a complete thinking content block to the SSE stream.
+// The thinking block is injected at the given index.
+func injectThinkingSSEBlock(w http.ResponseWriter, flusher http.Flusher, index int) {
+	// thinking block_start
+	fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n", index)
+	// thinking delta
+	fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Processing request...\"}}\n\n", index)
+	// thinking block_stop
+	fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", index)
+	flusher.Flush()
+}
+
+// incrementContentBlockIndex increments the "index" field in SSE event data by the given offset.
+// Only modifies events that have an "index" field (content_block_start, content_block_delta, content_block_stop).
+func incrementContentBlockIndex(data string, offset int) string {
+	if offset <= 0 {
+		return data
+	}
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(data), &m) != nil {
+		return data
+	}
+	idx, ok := m["index"].(float64)
+	if !ok {
+		return data
+	}
+	m["index"] = idx + float64(offset)
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return data
+	}
+	return string(updated)
+}
+
 func extractTextDeltaLen(data string) int {
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(data), &m); err != nil {

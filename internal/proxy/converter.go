@@ -237,7 +237,7 @@ func (b *AnthropicStreamBuffer) ToAnthropicMessage(clientModel ...string) map[st
 			{
 				"type":      "thinking",
 				"thinking":  "(internal reasoning)",
-				"signature": "",
+				"signature": "ZGlkbn90aGluaw==", // base64 placeholder (non-validating proxy)
 			},
 			content[0],
 		}
