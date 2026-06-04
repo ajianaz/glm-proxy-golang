@@ -19,11 +19,11 @@ func TestDefaultMapping(t *testing.T) {
 		{"claude-opus-4-0-1-20250514", "glm-5.1"}, // any opus variant
 
 		// Sonnet tier → glm-5-turbo
-		{"claude-sonnet-4-20250514", "glm-5-turbo"},
-		{"claude-sonnet-4-5-20250514", "glm-5-turbo"},
-		{"claude-3-5-sonnet-20241022", "glm-5-turbo"},
-		{"claude-3-5-sonnet-latest", "glm-5-turbo"},
-		{"claude-sonnet-4-0-20250514", "glm-5-turbo"},
+		{"claude-sonnet-4-20250514", "glm-5.1"},
+		{"claude-sonnet-4-5-20250514", "glm-5.1"},
+		{"claude-3-5-sonnet-20241022", "glm-5.1"},
+		{"claude-3-5-sonnet-latest", "glm-5.1"},
+		{"claude-sonnet-4-0-20250514", "glm-5.1"},
 
 		// Haiku tier → glm-4.5-air
 		{"claude-3-5-haiku-20241022", "glm-4.5-air"},
@@ -31,8 +31,8 @@ func TestDefaultMapping(t *testing.T) {
 		{"claude-3-5-haiku-latest", "glm-4.5-air"},
 
 		// GLM models — pass through (no mapping needed)
-		{"glm-5-turbo", "glm-5-turbo"},
 		{"glm-5.1", "glm-5.1"},
+		{"glm-5-turbo", "glm-5-turbo"}, // legacy name still passes through
 		{"glm-4.7", "glm-4.7"},
 
 		// Unknown models — pass through
@@ -85,8 +85,8 @@ func TestEnvOverride(t *testing.T) {
 		t.Errorf("specific override failed: got %q, want %q", got, "glm-4.7")
 	}
 	// Other sonnet variants should still match tier
-	if got := mm.Resolve("claude-3-5-sonnet-20241022"); got != "glm-5-turbo" {
-		t.Errorf("non-overridden specific should still match tier: got %q, want %q", got, "glm-5-turbo")
+	if got := mm.Resolve("claude-3-5-sonnet-20241022"); got != "glm-5.1" {
+		t.Errorf("non-overridden specific should still match tier: got %q, want %q", got, "glm-5.1")
 	}
 }
 
@@ -112,7 +112,7 @@ func TestEntries(t *testing.T) {
 	if entries["*opus*"] != "glm-5.1" {
 		t.Errorf("expected *opus* → glm-5.1, got %v", entries["*opus*"])
 	}
-	if entries["*sonnet*"] != "glm-5-turbo" {
+	if entries["*sonnet*"] != "glm-5.1" {
 		t.Errorf("expected *sonnet* → glm-5-turbo, got %v", entries["*sonnet*"])
 	}
 	if entries["*haiku*"] != "glm-4.5-air" {
@@ -129,7 +129,7 @@ func TestCaseInsensitive(t *testing.T) {
 		expected string
 	}{
 		{"Claude-Opus-4-20250514", "glm-5.1"},
-		{"CLAUDE-SONNET-4-20250514", "glm-5-turbo"},
+		{"CLAUDE-SONNET-4-20250514", "glm-5.1"},
 		{"claude-3-5-HAIKU-20241022", "glm-4.5-air"},
 	}
 
@@ -148,7 +148,7 @@ func TestMalformedEnv(t *testing.T) {
 		t.Errorf("malformed env should not break valid entries: got %q", got)
 	}
 	// Defaults should still be loaded
-	if got := mm.Resolve("claude-sonnet-4-20250514"); got != "glm-5-turbo" {
+	if got := mm.Resolve("claude-sonnet-4-20250514"); got != "glm-5.1" {
 		t.Errorf("defaults should be preserved: got %q", got)
 	}
 }

@@ -82,7 +82,7 @@ func TestReadAndInjectModel_ClientModelPreserved(t *testing.T) {
 
 func TestReadAndInjectModel_ModelMappingApplied(t *testing.T) {
 	// When client sends a Claude model name and mapping is enabled, it should be mapped
-	mm := modelmap.New("") // use defaults: sonnet → glm-5-turbo
+	mm := modelmap.New("") // use defaults: sonnet → glm-5.1 (same as opus)
 	body := strings.NewReader(`{"model": "claude-sonnet-4-20250514", "messages": []}`)
 	rc := ioReadCloser(body)
 
@@ -93,7 +93,7 @@ func TestReadAndInjectModel_ModelMappingApplied(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(injected).Decode(&result)
-	if result["model"] != "glm-5-turbo" {
+	if result["model"] != "glm-5.1" {
 		t.Fatalf("expected claude-sonnet-4-20250514 to be mapped to glm-5-turbo, got %v", result["model"])
 	}
 }

@@ -21,11 +21,12 @@ const (
 
 // DefaultMapping is the built-in mapping table matching Z.AI's recommended settings:
 //   - opus   → glm-5.1
-//   - sonnet → glm-5-turbo
+//   - sonnet → glm-5.1 (Claude Code CLI rejects sonnet responses from third-party providers;
+//              mapping to glm-5.1 (same as opus) works around this limitation)
 //   - haiku  → glm-4.5-air
 var DefaultMapping = map[string]string{
 	TierOpus:   "glm-5.1",
-	TierSonnet: "glm-5-turbo",
+	TierSonnet: "glm-5.1",
 	TierHaiku:  "glm-4.5-air",
 }
 
