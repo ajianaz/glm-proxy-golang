@@ -27,7 +27,7 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	upstreamURL := p.Config.AnthropicUpstream + r.URL.Path
 
 	// Read, map, and inject model, then check if client wants streaming
-	body, bodyMap, err := readAndInjectModelWithMap(r.Body, r.URL.Path, r.Method, model, p.Config.ModelMap)
+	body, bodyMap, clientModel, err := readAndInjectModelWithMap(r.Body, r.URL.Path, r.Method, model, p.Config.ModelMap)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -46,11 +46,7 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 		return
 	}
 
-	// Streaming: use existing behavior
-	clientModel := ""
-	if m, ok := bodyMap["model"].(string); ok {
-		clientModel = m
-	}
+	// Streaming: use existing behavior — clientModel is the original model name (before mapping)
 	p.proxyStreaming(w, r, apiKey, body, upstreamURL, upstreamKey, clientModel)
 }
 
@@ -202,21 +198,25 @@ func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Reques
 
 // readAndInjectModelWithMap reads the request body, applies model mapping,
 // injects the model field (if missing), and returns both the modified body
-// as a ReadCloser and the parsed body map.
-func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, mm *modelmap.ModelMap) (io.ReadCloser, map[string]interface{}, error) {
+// as a ReadCloser, the parsed body map, and the original client-requested model
+// (before mapping, for response model name replacement).
+func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, mm *modelmap.ModelMap) (io.ReadCloser, map[string]interface{}, string, error) {
 	if body == nil || (method != "POST" && method != "PUT" && method != "PATCH") {
-		return body, nil, nil
+		return body, nil, "", nil
 	}
 
 	var bodyMap map[string]interface{}
 	if err := json.NewDecoder(body).Decode(&bodyMap); err != nil {
-		return body, nil, nil // not JSON, pass through
+		return body, nil, "", nil // not JSON, pass through
 	}
 	body.Close()
+
+	originalClientModel := ""
 
 	// Only inject model for relevant paths
 	if strings.Contains(path, "/chat/completions") || strings.Contains(path, "/completions") || strings.Contains(path, "/messages") {
 		if clientModel, hasModel := bodyMap["model"].(string); hasModel {
+			originalClientModel = clientModel // save before mapping
 			// Apply model mapping to client-specified model
 			if mm != nil && mm.Enabled() {
 				bodyMap["model"] = mm.Resolve(clientModel)
@@ -241,9 +241,9 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 
 	b, err := json.Marshal(bodyMap)
 	if err != nil {
-		return io.NopCloser(strings.NewReader("{}")), bodyMap, err
+		return io.NopCloser(strings.NewReader("{}")), bodyMap, originalClientModel, err
 	}
-	return io.NopCloser(strings.NewReader(string(b))), bodyMap, nil
+	return io.NopCloser(strings.NewReader(string(b))), bodyMap, originalClientModel, nil
 }
 
 // extractSystemMessages finds messages with role:"system" in the messages array,
