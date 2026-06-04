@@ -47,11 +47,15 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	}
 
 	// Streaming: use existing behavior
-	p.proxyStreaming(w, r, apiKey, body, upstreamURL, upstreamKey)
+	clientModel := ""
+	if m, ok := bodyMap["model"].(string); ok {
+		clientModel = m
+	}
+	p.proxyStreaming(w, r, apiKey, body, upstreamURL, upstreamKey, clientModel)
 }
 
 // proxyStreaming handles streaming requests — passes through to upstream and relays SSE.
-func (p *AnthropicProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey, body io.ReadCloser, upstreamURL, upstreamKey string) {
+func (p *AnthropicProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, apiKey *storage.ApiKey, body io.ReadCloser, upstreamURL, upstreamKey, clientModel string) {
 	upstreamReq, err := http.NewRequest(r.Method, upstreamURL, body)
 	if err != nil {
 		WriteError(w, http.StatusBadGateway, "Failed to create upstream request")
@@ -80,7 +84,7 @@ func (p *AnthropicProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, 
 	// Check for SSE streaming
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
-		p.streamSSE(w, resp, apiKey.Key)
+		p.streamSSE(w, resp, apiKey.Key, clientModel)
 		return
 	}
 	defer resp.Body.Close()
@@ -313,7 +317,7 @@ func extractAnthropicTokens(body []byte) TokenResult {
 }
 
 // streamSSE proxies an SSE stream with inline token counting and cost tracking.
-func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, keyValue string) {
+func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, keyValue, clientModel string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -322,7 +326,7 @@ func (p *AnthropicProxy) streamSSE(w http.ResponseWriter, resp *http.Response, k
 	// Extract cost from upstream response headers (LiteLLM)
 	cost := parseCostFromHeader(resp.Header)
 
-	totalTokens := StreamSSE(w, resp.Body, "anthropic")
+	totalTokens := StreamSSE(w, resp.Body, "anthropic", clientModel)
 	// resp.Body is closed by StreamSSE via defer
 
 	// Always update usage — records the request and any partial tokens collected
