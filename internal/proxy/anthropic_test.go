@@ -190,3 +190,137 @@ func TestReadAndInjectModelWithMap_StripsThinking(t *testing.T) {
 		t.Fatalf("serialized body still contains 'thinking': %s", buf.String())
 	}
 }
+
+func TestExtractSystemMessages(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[string]interface{}
+		wantSys  interface{}
+		wantMsgs int
+	}{
+		{
+			name: "single system message extracted to string",
+			input: map[string]interface{}{
+				"messages": []interface{}{
+					map[string]interface{}{"role": "user", "content": "hi"},
+					map[string]interface{}{"role": "system", "content": "You are helpful."},
+					map[string]interface{}{"role": "user", "content": "bye"},
+				},
+			},
+			wantSys:  "You are helpful.",
+			wantMsgs: 2,
+		},
+		{
+			name: "multiple system messages merged to array",
+			input: map[string]interface{}{
+				"messages": []interface{}{
+					map[string]interface{}{"role": "system", "content": "Be concise."},
+					map[string]interface{}{"role": "user", "content": "hi"},
+					map[string]interface{}{"role": "system", "content": "Reply in JSON."},
+				},
+			},
+			wantSys: []interface{}{
+				"Be concise.",
+				"Reply in JSON.",
+			},
+			wantMsgs: 1,
+		},
+		{
+			name: "no system messages — unchanged",
+			input: map[string]interface{}{
+				"messages": []interface{}{
+					map[string]interface{}{"role": "user", "content": "hi"},
+					map[string]interface{}{"role": "assistant", "content": "hello"},
+				},
+			},
+			wantSys:  nil,
+			wantMsgs: 2,
+		},
+		{
+			name: "system content as array (Claude Code format)",
+			input: map[string]interface{}{
+				"messages": []interface{}{
+					map[string]interface{}{"role": "system", "content": []interface{}{
+						map[string]interface{}{"type": "text", "text": "System instructions."},
+						map[string]interface{}{"type": "text", "text": "More instructions."},
+					}},
+					map[string]interface{}{"role": "user", "content": "hi"},
+				},
+			},
+			wantSys: []interface{}{
+				map[string]interface{}{"type": "text", "text": "System instructions."},
+				map[string]interface{}{"type": "text", "text": "More instructions."},
+			},
+			wantMsgs: 1,
+		},
+		{
+			name: "preserves existing top-level system",
+			input: map[string]interface{}{
+				"system":  "Existing system prompt",
+				"messages": []interface{}{
+					map[string]interface{}{"role": "system", "content": "Injected system."},
+					map[string]interface{}{"role": "user", "content": "hi"},
+				},
+			},
+			wantSys:  "Injected system.", // overwrites existing (extracted system takes priority)
+			wantMsgs: 1,
+		},
+		{
+			name:     "no messages field — no-op",
+			input:    map[string]interface{}{"model": "test"},
+			wantSys:  nil,
+			wantMsgs: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extractSystemMessages(tt.input)
+
+			sys := tt.input["system"]
+			if tt.wantSys == nil {
+				if sys != nil {
+					t.Fatalf("expected nil system, got %v", sys)
+				}
+			} else {
+				switch s := tt.wantSys.(type) {
+				case string:
+					got, ok := sys.(string)
+					if !ok || got != s {
+						t.Fatalf("expected system=%q, got %v", s, sys)
+					}
+				case []interface{}:
+					got, ok := sys.([]interface{})
+					if !ok {
+						t.Fatalf("expected system array, got %T", sys)
+					}
+					if len(got) != len(s) {
+						t.Fatalf("expected %d system parts, got %d", len(s), len(got))
+					}
+				}
+			}
+
+			msgs, ok := tt.input["messages"].([]interface{})
+			if tt.wantMsgs == 0 {
+				if ok {
+					t.Fatalf("expected no messages, got %d", len(msgs))
+				}
+			} else if !ok || len(msgs) != tt.wantMsgs {
+				t.Fatalf("expected %d messages, got %v", tt.wantMsgs, tt.input["messages"])
+			}
+
+			// Verify no system role remains in messages
+			if msgs != nil {
+				for _, m := range msgs {
+					msg, ok := m.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if role, _ := msg["role"].(string); role == "system" {
+						t.Fatal("system role still in messages after extraction")
+					}
+				}
+			}
+		})
+	}
+}

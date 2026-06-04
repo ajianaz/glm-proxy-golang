@@ -228,6 +228,11 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 		// when it receives text-only content instead of thinking+text.
 		delete(bodyMap, "thinking")
 		delete(bodyMap, "budget_tokens")
+
+		// Claude Code v2.1.154+ regression: injects role:"system" inside messages[]
+		// which violates the Anthropic API schema (only user/assistant allowed).
+		// Extract system messages and merge into the top-level "system" field.
+		extractSystemMessages(bodyMap)
 	}
 
 	b, err := json.Marshal(bodyMap)
@@ -235,6 +240,55 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 		return io.NopCloser(strings.NewReader("{}")), bodyMap, err
 	}
 	return io.NopCloser(strings.NewReader(string(b))), bodyMap, nil
+}
+
+// extractSystemMessages finds messages with role:"system" in the messages array,
+// moves their content to the top-level "system" field, and removes them from messages.
+// This is needed because Claude Code v2.1.154+ sends system role inside messages[]
+// which breaks Anthropic-compatible providers that enforce strict schema validation.
+func extractSystemMessages(bodyMap map[string]interface{}) {
+	msgsRaw, ok := bodyMap["messages"]
+	if !ok {
+		return
+	}
+	msgs, ok := msgsRaw.([]interface{})
+	if !ok {
+		return
+	}
+
+	var userMsgs []interface{}
+	var systemParts []interface{}
+
+	for _, m := range msgs {
+		msg, ok := m.(map[string]interface{})
+		if !ok {
+			userMsgs = append(userMsgs, m)
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" {
+			userMsgs = append(userMsgs, m)
+			continue
+		}
+		// Extract content from system message
+		if content, ok := msg["content"]; ok {
+			systemParts = append(systemParts, content)
+		}
+	}
+
+	if len(systemParts) == 0 {
+		return
+	}
+
+	// Build the top-level system field
+	switch len(systemParts) {
+	case 1:
+		bodyMap["system"] = systemParts[0]
+	default:
+		bodyMap["system"] = systemParts
+	}
+
+	bodyMap["messages"] = userMsgs
 }
 
 // extractAnthropicTokens parses all token fields from Anthropic usage response.
