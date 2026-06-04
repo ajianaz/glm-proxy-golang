@@ -49,7 +49,9 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string, clientMod
 	)
 
 	// Determine if thinking injection is needed (only for Claude model names)
-	shouldInjectThinking := len(clientModel) > 0 && clientModel[0] != "" && strings.HasPrefix(clientModel[0], "claude-")
+	// NOTE: Temporarily disabled — Claude Code's internal parser rejects synthetic thinking blocks.
+	// Investigation needed: opus works with injection but sonnet doesn't, despite identical SSE structure.
+	shouldInjectThinking := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
