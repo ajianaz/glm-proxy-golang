@@ -221,6 +221,13 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 			// No model specified — inject default
 			bodyMap["model"] = model
 		}
+
+		// Strip extended thinking parameters — upstream (LiteLLM/GLM) doesn't support them.
+		// Claude Code CLI sends thinking.type=enabled which causes it to expect thinking
+		// blocks in the response. Without this strip, Claude Code discards the response
+		// when it receives text-only content instead of thinking+text.
+		delete(bodyMap, "thinking")
+		delete(bodyMap, "budget_tokens")
 	}
 
 	b, err := json.Marshal(bodyMap)

@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,5 +151,42 @@ func TestExtractAnthropicTokens_WithCache(t *testing.T) {
 	}
 	if result.Cached != 35 {
 		t.Fatalf("expected 35 cached (30+5), got %d", result.Cached)
+	}
+}
+
+func TestReadAndInjectModelWithMap_StripsThinking(t *testing.T) {
+	// Claude Code sends thinking parameters that upstream doesn't support
+	body := strings.NewReader(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [{"role": "user", "content": "hi"}],
+		"max_tokens": 16000,
+		"thinking": {"type": "enabled", "budget_tokens": 10000},
+		"budget_tokens": 10000
+	}`)
+
+	reader, bodyMap, err := readAndInjectModelWithMap(io.NopCloser(body), "/v1/messages", "POST", "glm-5-turbo", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer reader.Close()
+
+	// With nil ModelMap, model stays as-is (no mapping)
+	if bodyMap["model"] != "claude-sonnet-4-6" {
+		t.Fatalf("expected model to be unchanged (nil ModelMap), got %v", bodyMap["model"])
+	}
+
+	// Thinking parameters must be stripped
+	if _, exists := bodyMap["thinking"]; exists {
+		t.Fatal("expected 'thinking' to be stripped from body")
+	}
+	if _, exists := bodyMap["budget_tokens"]; exists {
+		t.Fatal("expected 'budget_tokens' to be stripped from body")
+	}
+
+	// Verify the serialized body also doesn't contain thinking
+	var buf bytes.Buffer
+	buf.ReadFrom(reader)
+	if bytes.Contains(buf.Bytes(), []byte("thinking")) {
+		t.Fatalf("serialized body still contains 'thinking': %s", buf.String())
 	}
 }
