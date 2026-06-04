@@ -12,6 +12,8 @@ import (
 // StreamSSE reads from upstream body and writes SSE chunks to the client.
 // Returns the tokens parsed from the stream.
 // resp.Body is closed via defer.
+// For "anthropic" mode: deduplicates message_start events and strips provider
+// prefix from model names (e.g., "glm/glm-5-turbo" → "glm-5-turbo").
 func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResult {
 	defer body.Close()
 
@@ -25,6 +27,11 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var result TokenResult
+	var (
+		seenMessageStart bool  // track first message_start for dedup
+		lastEvent        string
+		skipNextData     bool  // skip the data line following a skipped duplicate event
+	)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -35,13 +42,40 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 			continue
 		}
 
+		// Track event type for the data line that follows
+		if strings.HasPrefix(line, "event: ") {
+			lastEvent = strings.TrimSpace(line[7:])
+
+			// For anthropic mode, skip duplicate message_start event lines
+			if mode == "anthropic" && lastEvent == "message_start" && seenMessageStart {
+				skipNextData = true
+				continue
+			}
+
+			fmt.Fprintf(w, "%s\n", line)
+			flusher.Flush()
+			continue
+		}
+
 		if strings.HasPrefix(line, "data: ") {
 			data := line[6:]
+
+			// Skip data line for a skipped duplicate event
+			if skipNextData {
+				skipNextData = false
+				continue
+			}
 
 			if data == "[DONE]" {
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				break
+			}
+
+			// Anthropic mode fixes
+			if mode == "anthropic" && lastEvent == "message_start" {
+				seenMessageStart = true
+				data = stripModelPrefix(data)
 			}
 
 			chunk := parseSSETokens(data, mode)
@@ -62,6 +96,41 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 	}
 
 	return result
+}
+
+// stripModelPrefix removes the provider prefix from the model field in SSE data.
+// Only modifies "message_start" events. Example: "glm/glm-5-turbo" → "glm-5-turbo".
+func stripModelPrefix(data string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		return data
+	}
+
+	// Only modify message_start events
+	if m["type"] != "message_start" {
+		return data
+	}
+
+	msg, ok := m["message"].(map[string]interface{})
+	if !ok {
+		return data
+	}
+
+	model, ok := msg["model"].(string)
+	if !ok || model == "" {
+		return data
+	}
+
+	// Strip provider prefix (e.g., "glm/glm-5-turbo" → "glm-5-turbo")
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		msg["model"] = model[idx+1:]
+	}
+
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return data
+	}
+	return string(updated)
 }
 
 // parseSSETokens attempts to extract token counts from a single SSE data chunk.
