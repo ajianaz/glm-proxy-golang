@@ -175,18 +175,23 @@ func TestReadAndInjectModelWithMap_StripsThinking(t *testing.T) {
 		t.Fatalf("expected model to be unchanged (nil ModelMap), got %v", bodyMap["model"])
 	}
 
-	// Thinking parameters must be stripped
-	if _, exists := bodyMap["thinking"]; exists {
-		t.Fatal("expected 'thinking' to be stripped from body")
+	// Thinking parameters must be replaced with disabled (not stripped)
+	thinking, exists := bodyMap["thinking"]
+	if !exists {
+		t.Fatal("expected 'thinking' to still exist in body")
+	}
+	thinkingMap, ok := thinking.(map[string]interface{})
+	if !ok || thinkingMap["type"] != "disabled" {
+		t.Fatalf("expected thinking to be disabled, got %v", thinking)
 	}
 	if _, exists := bodyMap["budget_tokens"]; exists {
 		t.Fatal("expected 'budget_tokens' to be stripped from body")
 	}
 
-	// Verify the serialized body also doesn't contain thinking
+	// Verify the serialized body contains thinking as disabled
 	var buf bytes.Buffer
 	buf.ReadFrom(reader)
-	if bytes.Contains(buf.Bytes(), []byte("\"thinking\"")) {
+	if !bytes.Contains(buf.Bytes(), []byte("\"thinking\"")) || !bytes.Contains(buf.Bytes(), []byte("\"disabled\"")) {
 		t.Fatalf("serialized body still contains \"thinking\": %s", buf.String())
 	}
 }

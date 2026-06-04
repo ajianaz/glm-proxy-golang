@@ -229,13 +229,15 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 			bodyMap["model"] = model
 		}
 
-		// Strip extended thinking parameters — upstream (LiteLLM/GLM) doesn't support them.
-		// Save a flag before stripping so the response can synthesize thinking blocks.
+		// Handle extended thinking parameters for Claude Code CLI compatibility.
+		// Claude Code v2.1.154+ sends thinking params and validates the response.
+		// Upstream (LiteLLM/GLM) doesn't support thinking, so we need to handle it.
+		// Strategy: disable thinking (not delete) so the body stays valid.
 		if _, hasThinking := bodyMap["thinking"]; hasThinking {
 			thinkingRequested = true
+			bodyMap["thinking"] = map[string]interface{}{"type": "disabled"}
+			delete(bodyMap, "budget_tokens")
 		}
-		delete(bodyMap, "thinking")
-		delete(bodyMap, "budget_tokens")
 
 		// Claude Code v2.1.154+ regression: injects role:"system" inside messages[]
 		// which violates the Anthropic API schema (only user/assistant allowed).
