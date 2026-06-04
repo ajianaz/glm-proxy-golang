@@ -195,14 +195,33 @@ func (b *AnthropicStreamBuffer) ProcessLine(line string) {
 }
 
 // ToAnthropicMessage converts the collected stream data into a single Anthropic message response.
-func (b *AnthropicStreamBuffer) ToAnthropicMessage() map[string]interface{} {
+// If clientModel is non-empty, it overrides the model name from the upstream response
+// (needed for Claude Code CLI compatibility).
+func (b *AnthropicStreamBuffer) ToAnthropicMessage(clientModel ...string) map[string]interface{} {
 	id := b.ID
 	if id == "" {
 		id = "msg_unknown"
 	}
 	model := b.Model
+	if len(clientModel) > 0 && clientModel[0] != "" {
+		model = clientModel[0]
+	}
 	if model == "" {
 		model = "unknown"
+	}
+
+	// Estimate tokens if upstream reported zero
+	inputTokens := b.InputTokens
+	outputTokens := b.OutputTokens
+	contentLen := b.Content.Len()
+	if outputTokens == 0 && contentLen > 0 {
+		outputTokens = contentLen / charsPerToken
+		if outputTokens < 1 {
+			outputTokens = 1
+		}
+	}
+	if inputTokens == 0 && contentLen > 0 {
+		inputTokens = 1000 // conservative estimate
 	}
 
 	return map[string]interface{}{
@@ -214,8 +233,8 @@ func (b *AnthropicStreamBuffer) ToAnthropicMessage() map[string]interface{} {
 		"stop_reason":   b.StopReason,
 		"stop_sequence": nil,
 		"usage": map[string]interface{}{
-			"input_tokens":               float64(b.InputTokens),
-			"output_tokens":              float64(b.OutputTokens),
+			"input_tokens":               float64(inputTokens),
+			"output_tokens":              float64(outputTokens),
 			"cache_creation_input_tokens": float64(b.CacheCreation),
 			"cache_read_input_tokens":    float64(b.CacheRead),
 		},
