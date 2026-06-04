@@ -17,9 +17,10 @@ const charsPerToken = 4
 // Returns the tokens parsed from the stream.
 // resp.Body is closed via defer.
 // For "anthropic" mode: deduplicates message_start events, strips provider
-// prefix from model names, and injects estimated token counts when upstream
-// reports zero (needed for Claude Code CLI compatibility).
-func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResult {
+// prefix from model names, replaces the model with clientModel if provided
+// (needed for Claude Code CLI compat), and injects estimated token counts
+// when upstream reports zero.
+func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string, clientModel ...string) TokenResult {
 	defer body.Close()
 
 	flusher, ok := w.(http.Flusher)
@@ -85,6 +86,11 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string) TokenResu
 				if lastEvent == "message_start" {
 					seenMessageStart = true
 					data = stripModelPrefix(data)
+					// Replace model name with client-requested model for Claude Code CLI compat.
+					// Claude Code rejects responses where the model doesn't match the request.
+					if len(clientModel) > 0 && clientModel[0] != "" {
+						data = replaceResponseModel(data, clientModel[0])
+					}
 				}
 
 				// Track text content length for token estimation
@@ -221,6 +227,37 @@ func stripModelPrefix(data string) string {
 	if idx := strings.Index(model, "/"); idx >= 0 {
 		msg["model"] = model[idx+1:]
 	}
+
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return data
+	}
+	return string(updated)
+}
+
+// replaceResponseModel replaces the model name in a message_start SSE data payload
+// with the client-requested model name. This is needed because Claude Code CLI
+// validates that the response model matches the request and discards responses
+// where they differ.
+func replaceResponseModel(data string, clientModel string) string {
+	if clientModel == "" {
+		return data
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		return data
+	}
+
+	if m["type"] != "message_start" {
+		return data
+	}
+
+	msg, ok := m["message"].(map[string]interface{})
+	if !ok {
+		return data
+	}
+
+	msg["model"] = clientModel
 
 	updated, err := json.Marshal(m)
 	if err != nil {

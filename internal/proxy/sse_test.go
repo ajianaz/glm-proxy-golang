@@ -310,3 +310,88 @@ func TestStripModelPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestReplaceResponseModel(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		clientModel string
+		expected    string
+	}{
+		{
+			name:        "replaces model in message_start",
+			input:       `{"type":"message_start","message":{"id":"msg_1","model":"glm-5-turbo"}}`,
+			clientModel: "claude-sonnet-4-6",
+			expected:    "claude-sonnet-4-6",
+		},
+		{
+			name:        "replaces model with prefix",
+			input:       `{"type":"message_start","message":{"id":"msg_1","model":"glm/glm-5-turbo"}}`,
+			clientModel: "claude-opus-4-8",
+			expected:    "claude-opus-4-8",
+		},
+		{
+			name:        "non-message_start — unchanged",
+			input:       `{"type":"message_delta","model":"glm-5-turbo"}`,
+			clientModel: "claude-sonnet-4-6",
+			expected:    "glm-5-turbo", // not replaced
+		},
+		{
+			name:        "invalid JSON — unchanged",
+			input:       `not json`,
+			clientModel: "claude-sonnet-4-6",
+			expected:    "not json",
+		},
+		{
+			name:        "empty clientModel — unchanged",
+			input:       `{"type":"message_start","message":{"id":"msg_1","model":"glm-5-turbo"}}`,
+			clientModel: "",
+			expected:    "glm-5-turbo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := replaceResponseModel(tt.input, tt.clientModel)
+			if !strings.Contains(result, tt.expected) {
+				t.Fatalf("expected %q in result, got: %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestStreamSSE_ModelReplacementE2E(t *testing.T) {
+	sseData := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm-5-turbo\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n" +
+		"\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n" +
+		"\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n" +
+		"\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n" +
+		"\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n" +
+		"\n"
+
+	body := strings.NewReader(sseData)
+	w := httptest.NewRecorder()
+	StreamSSE(w, ioReadCloser(body), "anthropic", "claude-sonnet-4-6")
+
+	out := w.Body.String()
+
+	// Verify model name replaced
+	if !strings.Contains(out, `"model":"claude-sonnet-4-6"`) {
+		t.Fatalf("expected model:claude-sonnet-4-6 in output, got:\\n%s", out)
+	}
+	// Verify glm model gone
+	if strings.Contains(out, "glm-5-turbo") {
+		t.Fatalf("glm-5-turbo should not appear in output:\\n%s", out)
+	}
+}
