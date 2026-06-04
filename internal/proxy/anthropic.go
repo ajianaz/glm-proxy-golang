@@ -27,21 +27,10 @@ func (p *AnthropicProxy) Proxy(w http.ResponseWriter, r *http.Request, apiKey *s
 	upstreamURL := p.Config.AnthropicUpstream + r.URL.Path
 
 	// Read, map, and inject model, then check if client wants streaming
-	body, bodyMap, clientModel, err := readAndInjectModelWithMap(r.Body, r.URL.Path, r.Method, model, p.Config.ModelMap)
+	body, bodyMap, clientModel, thinkingRequested, err := readAndInjectModelWithMap(r.Body, r.URL.Path, r.Method, model, p.Config.ModelMap)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
-	}
-
-	// Detect if client requested extended thinking (before it was stripped by readAndInjectModelWithMap)
-	thinkingRequested := false
-	// Note: thinking params are stripped before bodyMap reaches here, so we check
-	// via the request body. Since readAndInjectModelWithMap strips them, we need
-	// to add a detection mechanism there. For now, default to true for sonnet models.
-	// A better approach: always check if the original request had thinking.
-	if _, exists := bodyMap["_thinking_was_requested"]; exists {
-		thinkingRequested = true
-		delete(bodyMap, "_thinking_was_requested")
 	}
 
 	// Determine if client wants streaming — if stream is false or missing, we need to force stream
@@ -209,21 +198,22 @@ func (p *AnthropicProxy) proxyNonStreaming(w http.ResponseWriter, r *http.Reques
 }
 
 // readAndInjectModelWithMap reads the request body, applies model mapping,
-// injects the model field (if missing), and returns both the modified body
-// as a ReadCloser, the parsed body map, and the original client-requested model
-// (before mapping, for response model name replacement).
-func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, mm *modelmap.ModelMap) (io.ReadCloser, map[string]interface{}, string, error) {
+// injects the model field (if missing), and returns the modified body
+// as a ReadCloser, the parsed body map, the original client-requested model
+// (before mapping), and whether thinking was requested.
+func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, mm *modelmap.ModelMap) (io.ReadCloser, map[string]interface{}, string, bool, error) {
 	if body == nil || (method != "POST" && method != "PUT" && method != "PATCH") {
-		return body, nil, "", nil
+		return body, nil, "", false, nil
 	}
 
 	var bodyMap map[string]interface{}
 	if err := json.NewDecoder(body).Decode(&bodyMap); err != nil {
-		return body, nil, "", nil // not JSON, pass through
+		return body, nil, "", false, nil // not JSON, pass through
 	}
 	body.Close()
 
 	originalClientModel := ""
+	thinkingRequested := false
 
 	// Only inject model for relevant paths
 	if strings.Contains(path, "/chat/completions") || strings.Contains(path, "/completions") || strings.Contains(path, "/messages") {
@@ -241,7 +231,7 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 		// Strip extended thinking parameters — upstream (LiteLLM/GLM) doesn't support them.
 		// Save a flag before stripping so the response can synthesize thinking blocks.
 		if _, hasThinking := bodyMap["thinking"]; hasThinking {
-			bodyMap["_thinking_was_requested"] = true
+			thinkingRequested = true
 		}
 		delete(bodyMap, "thinking")
 		delete(bodyMap, "budget_tokens")
@@ -254,9 +244,9 @@ func readAndInjectModelWithMap(body io.ReadCloser, path, method, model string, m
 
 	b, err := json.Marshal(bodyMap)
 	if err != nil {
-		return io.NopCloser(strings.NewReader("{}")), bodyMap, originalClientModel, err
+		return io.NopCloser(strings.NewReader("{}")), bodyMap, originalClientModel, thinkingRequested, err
 	}
-	return io.NopCloser(strings.NewReader(string(b))), bodyMap, originalClientModel, nil
+	return io.NopCloser(strings.NewReader(string(b))), bodyMap, originalClientModel, thinkingRequested, nil
 }
 
 // extractSystemMessages finds messages with role:"system" in the messages array,
