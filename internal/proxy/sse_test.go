@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -136,6 +137,139 @@ func TestStreamSSE_AnthropicDedupMessageStart(t *testing.T) {
 	}
 	if !strings.Contains(out, "glm-5-turbo") {
 		t.Fatal("expected 'glm-5-turbo' (stripped prefix) in output")
+	}
+}
+
+func TestExtractTextDeltaLen(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{
+			name:     "text_delta with text",
+			input:    `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`,
+			expected: 5,
+		},
+		{
+			name:     "text_delta with empty text",
+			input:    `{"type":"content_block_delta","delta":{"type":"text_delta","text":""}}`,
+			expected: 0,
+		},
+		{
+			name:     "non-text delta",
+			input:    `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}`,
+			expected: 0,
+		},
+		{
+			name:     "invalid JSON",
+			input:    `not json`,
+			expected: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractTextDeltaLen(tt.input)
+			if got != tt.expected {
+				t.Fatalf("expected %d, got %d", tt.expected, got)
+			}
+		})
+	}
+}
+
+func TestInjectEstimatedTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		charCount   int
+		wantOutput  int
+		wantInput   int
+	}{
+		{
+			name:       "injects when output_tokens is 0",
+			input:      `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
+			charCount: 80, // 80/4 = 20 tokens
+			wantOutput: 20,
+			wantInput:  1000, // default estimate when input is also 0
+		},
+		{
+			name:       "respects existing non-zero output_tokens",
+			input:      `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":25}}`,
+			charCount: 80,
+			wantOutput: 25, // unchanged
+			wantInput:  10, // unchanged
+		},
+		{
+			name:       "minimum 1 token estimate",
+			input:      `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
+			charCount: 2, // 2/4 = 0, rounds up to 1
+			wantOutput: 1,
+			wantInput:  1000,
+		},
+		{
+			name:       "zero charCount returns unchanged",
+			input:      `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
+			charCount: 0,
+			wantOutput: 0, // unchanged
+			wantInput:  0, // unchanged
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := injectEstimatedTokens(tt.input, tt.charCount)
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(result), &m); err != nil {
+				t.Fatalf("failed to parse result: %v", err)
+			}
+			usage := m["usage"].(map[string]interface{})
+			gotOutput := int(usage["output_tokens"].(float64))
+			gotInput := int(usage["input_tokens"].(float64))
+			if gotOutput != tt.wantOutput {
+				t.Fatalf("output_tokens: expected %d, got %d", tt.wantOutput, gotOutput)
+			}
+			if gotInput != tt.wantInput {
+				t.Fatalf("input_tokens: expected %d, got %d", tt.wantInput, gotInput)
+			}
+		})
+	}
+}
+
+func TestStreamSSE_TokenEstimationE2E(t *testing.T) {
+	// Full SSE stream simulating what Claude Code would receive
+	sseData := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm-5-turbo\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n" +
+		"\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n" +
+		"\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello, world!\"}}\n" +
+		"\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" How are you?\"}}\n" +
+		"\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n" +
+		"\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n" +
+		"\n"
+
+	body := strings.NewReader(sseData)
+	w := httptest.NewRecorder()
+	StreamSSE(w, ioReadCloser(body), "anthropic")
+
+	out := w.Body.String()
+
+	// "Hello, world!" (13) + " How are you?" (12) = 25 chars → 25/4 = 6 tokens
+	if !strings.Contains(out, `"output_tokens":6`) {
+		t.Fatalf("expected output_tokens:6 in output, got:\\n%s", out)
+	}
+	if !strings.Contains(out, `"input_tokens":1000`) {
+		t.Fatalf("expected input_tokens:1000 in output, got:\\n%s", out)
 	}
 }
 
