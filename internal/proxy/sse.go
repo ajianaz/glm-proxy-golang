@@ -98,12 +98,13 @@ var (
 				}
 
 				// Inject synthetic thinking block before first text content block
-				// when client requested extended thinking (Claude Code CLI compat).
+				// when client uses a Claude model name (Claude Code CLI compat).
+				// Only trigger for Claude model names (not glm-* direct access).
 				if lastEvent == "content_block_start" && !thinkingInjected {
 					var evt map[string]interface{}
 					if json.Unmarshal([]byte(data), &evt) == nil {
 						if block, ok := evt["content_block"].(map[string]interface{}); ok {
-							if block["type"] == "text" && len(clientModel) > 0 && clientModel[0] != "" {
+							if block["type"] == "text" && len(clientModel) > 0 && clientModel[0] != "" && strings.HasPrefix(clientModel[0], "claude-") {
 								// Get the index from the event
 								index := evt["index"]
 								// Inject thinking block_start
