@@ -206,6 +206,11 @@ func (b *AnthropicStreamBuffer) ToAnthropicMessage(clientModel ...string) map[st
 	model := b.Model
 	if len(clientModel) > 0 && clientModel[0] != "" {
 		model = clientModel[0]
+		// Claude Code rejects sonnet responses from third-party providers.
+		// Map sonnet → opus in the response model name.
+		if strings.Contains(strings.ToLower(model), "sonnet") {
+			model = "claude-opus-4-8"
+		}
 	}
 	if model == "" {
 		model = "unknown"

@@ -341,9 +341,19 @@ func stripModelPrefix(data string) string {
 // with the client-requested model name. This is needed because Claude Code CLI
 // validates that the response model matches the request and discards responses
 // where they differ.
+//
+// Special case: sonnet models are mapped to opus in the response because Claude Code
+// v2.1.162 silently rejects sonnet-tier responses from third-party providers.
 func replaceResponseModel(data string, clientModel string) string {
 	if clientModel == "" {
 		return data
+	}
+
+	// Claude Code rejects sonnet responses from third-party providers.
+	// Map sonnet → opus in the response model name to work around this.
+	responseModel := clientModel
+	if strings.Contains(strings.ToLower(clientModel), "sonnet") {
+		responseModel = "claude-opus-4-8"
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(data), &m); err != nil {
@@ -359,7 +369,7 @@ func replaceResponseModel(data string, clientModel string) string {
 		return data
 	}
 
-	msg["model"] = clientModel
+	msg["model"] = responseModel
 
 	updated, err := json.Marshal(m)
 	if err != nil {

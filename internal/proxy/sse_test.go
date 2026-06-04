@@ -322,7 +322,7 @@ func TestReplaceResponseModel(t *testing.T) {
 			name:        "replaces model in message_start",
 			input:       `{"type":"message_start","message":{"id":"msg_1","model":"glm-5-turbo"}}`,
 			clientModel: "claude-sonnet-4-6",
-			expected:    "claude-sonnet-4-6",
+			expected:    "claude-opus-4-8", // sonnet → opus (Claude Code compat)
 		},
 		{
 			name:        "replaces model with prefix",
@@ -347,6 +347,12 @@ func TestReplaceResponseModel(t *testing.T) {
 			input:       `{"type":"message_start","message":{"id":"msg_1","model":"glm-5-turbo"}}`,
 			clientModel: "",
 			expected:    "glm-5-turbo",
+		},
+		{
+			name:        "sonnet model mapped to opus",
+			input:       `{"type":"message_start","message":{"id":"msg_1","model":"glm-5.1"}}`,
+			clientModel: "claude-sonnet-4-20250514",
+			expected:    "claude-opus-4-8", // sonnet always → opus
 		},
 	}
 
@@ -386,9 +392,9 @@ func TestStreamSSE_ModelReplacementE2E(t *testing.T) {
 
 	out := w.Body.String()
 
-	// Verify model name replaced
-	if !strings.Contains(out, `"model":"claude-sonnet-4-6"`) {
-		t.Fatalf("expected model:claude-sonnet-4-6 in output, got:\\n%s", out)
+	// Verify model name replaced (sonnet → opus for Claude Code compat)
+	if !strings.Contains(out, `"model":"claude-opus-4-8"`) {
+		t.Fatalf("expected model:claude-opus-4-8 in output, got:\\n%s", out)
 	}
 	// Verify glm model gone
 	if strings.Contains(out, "glm-5-turbo") {
