@@ -127,18 +127,18 @@ func StreamSSE(w http.ResponseWriter, body io.ReadCloser, mode string, clientMod
 						}
 					}
 
-					if isTextBlock {
-						// Inject thinking block at index originalIndex, then write text block at originalIndex+1
-						injectThinkingSSEBlock(w, flusher, originalIndex)
-						thinkInjectDone = true
-						indexOffset = 1 // shift all subsequent content block indices by 1
+			if isTextBlock {
+					// Inject thinking block at index originalIndex, then text at originalIndex+1.
+					// Set indexOffset so the general reindexing below handles the +1.
+					injectThinkingSSEBlock(w, flusher, originalIndex)
+					thinkInjectDone = true
+					indexOffset = 1 // shift all subsequent content block indices by 1
 
-						// Write the buffered event line (content_block_start) with bumped index
-						fmt.Fprintf(w, "%s\n", pendingEventLine)
-						// Rewrite the data line with incremented index
-						data = incrementContentBlockIndex(data, originalIndex+1)
-						pendingEventLine = ""
-						needThinkingInject = false
+					// Write the buffered event line
+					fmt.Fprintf(w, "%s\n", pendingEventLine)
+					// The general indexOffset logic below will increment this data's index
+					pendingEventLine = ""
+					needThinkingInject = false
 					} else {
 						// Not a text block — just release the buffered event line as-is
 						fmt.Fprintf(w, "%s\n", pendingEventLine)
