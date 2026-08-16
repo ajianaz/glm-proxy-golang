@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 
 	"glm-proxy/internal/config"
 	"glm-proxy/internal/proxy"
@@ -65,9 +64,9 @@ func ModelValidate(cfg *config.Config) func(http.Handler) http.Handler {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				json.NewEncoder(w).Encode(map[string]interface{}{
-					"error":            "model not allowed",
-					"model":            model,
-					"allowed_models":  cfg.AllowedModels,
+					"error":          "model not allowed",
+					"model":          model,
+					"allowed_models": cfg.AllowedModels,
 				})
 				return
 			}
@@ -77,11 +76,4 @@ func ModelValidate(cfg *config.Config) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// isModelRelevantPath returns true for paths that carry model selection.
-func isModelRelevantPath(path string) bool {
-	return strings.Contains(path, "/chat/completions") ||
-		strings.Contains(path, "/completions") ||
-		strings.Contains(path, "/messages")
 }
